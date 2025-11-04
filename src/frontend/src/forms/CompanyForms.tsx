@@ -1,3 +1,7 @@
+import type {
+  ApiFormAdjustFilterType,
+  ApiFormFieldSet
+} from '@lib/types/Forms';
 import {
   IconAt,
   IconCurrencyDollar,
@@ -10,17 +14,16 @@ import {
 } from '@tabler/icons-react';
 import { useMemo } from 'react';
 
-import type {
-  ApiFormAdjustFilterType,
-  ApiFormFieldSet
-} from '../components/forms/fields/ApiFormField';
-
 /**
  * Field set for SupplierPart instance
  */
 export function useSupplierPartFields({
+  manufacturerId,
+  manufacturerPartId,
   partId
 }: {
+  manufacturerId?: number;
+  manufacturerPartId?: number;
   partId?: number;
 }) {
   return useMemo(() => {
@@ -35,7 +38,9 @@ export function useSupplierPartFields({
         }
       },
       manufacturer_part: {
+        value: manufacturerPartId,
         filters: {
+          manufacturer: manufacturerId,
           part_detail: true,
           manufacturer_detail: true
         },
@@ -70,7 +75,7 @@ export function useSupplierPartFields({
     };
 
     return fields;
-  }, [partId]);
+  }, [manufacturerId, manufacturerPartId, partId]);
 }
 
 export function useManufacturerPartFields() {
@@ -126,6 +131,7 @@ export function companyFields(): ApiFormFieldSet {
     email: {
       icon: <IconAt />
     },
+    tax_id: {},
     is_supplier: {},
     is_manufacturer: {},
     is_customer: {},

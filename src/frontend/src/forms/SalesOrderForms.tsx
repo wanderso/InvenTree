@@ -1,28 +1,37 @@
-import { t } from '@lingui/macro';
+import { t } from '@lingui/core/macro';
 import { Table } from '@mantine/core';
-import { IconAddressBook, IconUser, IconUsers } from '@tabler/icons-react';
+import {
+  IconAddressBook,
+  IconCalendar,
+  IconUser,
+  IconUsers
+} from '@tabler/icons-react';
 import { useEffect, useMemo, useState } from 'react';
 
+import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import { ModelType } from '@lib/enums/ModelType';
 import RemoveRowButton from '../components/buttons/RemoveRowButton';
 import { StandaloneField } from '../components/forms/StandaloneField';
+
+import { ProgressBar } from '@lib/components/ProgressBar';
+import { apiUrl } from '@lib/functions/Api';
 import type {
   ApiFormAdjustFilterType,
   ApiFormFieldSet,
   ApiFormFieldType
-} from '../components/forms/fields/ApiFormField';
+} from '@lib/types/Forms';
 import type { TableFieldRowProps } from '../components/forms/fields/TableField';
-import { ProgressBar } from '../components/items/ProgressBar';
-import { ApiEndpoints } from '../enums/ApiEndpoints';
-import { ModelType } from '../enums/ModelType';
 import { useCreateApiFormModal } from '../hooks/UseForm';
-import { apiUrl } from '../states/ApiState';
-import { PartColumn } from '../tables/ColumnRenderers';
+import { useGlobalSettingsState } from '../states/SettingsStates';
+import { RenderPartColumn } from '../tables/ColumnRenderers';
 
 export function useSalesOrderFields({
   duplicateOrderId
 }: {
   duplicateOrderId?: number;
 }): ApiFormFieldSet {
+  const globalSettings = useGlobalSettingsState();
+
   return useMemo(() => {
     const fields: ApiFormFieldSet = {
       reference: {},
@@ -37,7 +46,12 @@ export function useSalesOrderFields({
       customer_reference: {},
       project_code: {},
       order_currency: {},
-      target_date: {},
+      start_date: {
+        icon: <IconCalendar />
+      },
+      target_date: {
+        icon: <IconCalendar />
+      },
       link: {},
       contact: {
         icon: <IconUser />,
@@ -76,21 +90,47 @@ export function useSalesOrderFields({
       };
     }
 
+    if (!globalSettings.isSet('PROJECT_CODES_ENABLED', true)) {
+      delete fields.project_code;
+    }
+
     return fields;
-  }, [duplicateOrderId]);
+  }, [duplicateOrderId, globalSettings]);
 }
 
 export function useSalesOrderLineItemFields({
   customerId,
   orderId,
-  create
+  create,
+  currency
 }: {
   customerId?: number;
   orderId?: number;
   create?: boolean;
+  currency?: string;
 }): ApiFormFieldSet {
-  const fields = useMemo(() => {
-    return {
+  const [salePrice, setSalePrice] = useState<string>('0');
+  const [partCurrency, setPartCurrency] = useState<string>(currency ?? '');
+  const [part, setPart] = useState<any>({});
+  const [quantity, setQuantity] = useState<string>('');
+
+  useEffect(() => {
+    if (!create || !part || !part.price_breaks) return;
+
+    const qty = quantity ? Number.parseInt(quantity, 10) : 0;
+
+    const applicablePriceBreaks = part.price_breaks
+      .filter(
+        (pb: any) => pb.price_currency == partCurrency && qty <= pb.quantity
+      )
+      .sort((a: any, b: any) => a.quantity - b.quantity);
+
+    if (applicablePriceBreaks.length)
+      setSalePrice(applicablePriceBreaks[0].price);
+  }, [part, quantity, partCurrency, create]);
+
+  return useMemo(() => {
+    const fields: ApiFormFieldSet = {
       order: {
         filters: {
           customer_detail: true
@@ -101,20 +141,32 @@ export function useSalesOrderLineItemFields({
       part: {
         filters: {
           active: true,
-          salable: true
-        }
+          salable: true,
+          price_breaks: true
+        },
+        onValueChange: (_: any, record?: any) => setPart(record)
       },
       reference: {},
-      quantity: {},
-      sale_price: {},
-      sale_price_currency: {},
+      quantity: {
+        onValueChange: setQuantity
+      },
+      sale_price: {
+        value: salePrice
+      },
+      sale_price_currency: {
+        value: partCurrency,
+        onValueChange: setPartCurrency
+      },
+      project_code: {
+        description: t`Select project code for this line item`
+      },
       target_date: {},
       notes: {},
       link: {}
     };
-  }, []);
 
-  return fields;
+    return fields;
+  }, [salePrice, partCurrency, orderId, create]);
 }
 
 function SalesOrderAllocateLineRow({
@@ -179,7 +231,7 @@ function SalesOrderAllocateLineRow({
   return (
     <Table.Tr key={`table-row-${props.idx}-${record.pk}`}>
       <Table.Td>
-        <PartColumn part={record.part_detail} />
+        <RenderPartColumn part={record.part_detail} />
       </Table.Td>
       <Table.Td>
         <ProgressBar
@@ -245,7 +297,13 @@ export function useAllocateToSalesOrderForm({
       items: {
         field_type: 'table',
         value: [],
-        headers: [t`Part`, t`Allocated`, t`Stock Item`, t`Quantity`],
+        headers: [
+          { title: t`Part`, style: { minWidth: '200px' } },
+          { title: t`Allocated`, style: { minWidth: '200px' } },
+          { title: t`Stock Item`, style: { width: '100%' } },
+          { title: t`Quantity`, style: { minWidth: '200px' } },
+          { title: '', style: { width: '50px' } }
+        ],
         modelRenderer: (row: TableFieldRowProps) => {
           const record =
             lineItems.find((item) => item.pk == row.item.line_item) ?? {};
@@ -317,8 +375,10 @@ export function useSalesOrderAllocateSerialsFields({
 }
 
 export function useSalesOrderShipmentFields({
+  customerId,
   pending
 }: {
+  customerId?: number;
   pending?: boolean;
 }): ApiFormFieldSet {
   return useMemo(() => {
@@ -333,11 +393,18 @@ export function useSalesOrderShipmentFields({
       delivery_date: {
         hidden: pending ?? true
       },
+      shipment_address: {
+        placeholder: t`Leave blank to use the order address`,
+        filters: {
+          company: customerId,
+          ordering: '-primary'
+        }
+      },
       tracking_number: {},
       invoice_number: {},
       link: {}
     };
-  }, [pending]);
+  }, [customerId, pending]);
 }
 
 export function useSalesOrderShipmentCompleteFields({

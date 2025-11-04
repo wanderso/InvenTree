@@ -1,18 +1,20 @@
-import { Trans, t } from '@lingui/macro';
+import { t } from '@lingui/core/macro';
 import {
   Accordion,
+  Alert,
   Badge,
   Box,
-  Card,
   Code,
   Flex,
   Group,
   Indicator,
   List,
   LoadingOverlay,
+  Paper,
+  Progress,
   Stack,
-  Text,
-  Title
+  Table,
+  Text
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconCheck, IconRefresh } from '@tabler/icons-react';
@@ -20,9 +22,15 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { AddItemButton } from '@lib/components/AddItemButton';
+import { YesNoButton } from '@lib/components/YesNoButton';
+import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import { apiUrl } from '@lib/functions/Api';
+import { RowDeleteAction, RowEditAction, formatDecimal } from '@lib/index';
+import type { RowAction, TableColumn } from '@lib/types/Tables';
+import type { InvenTreeTableProps } from '@lib/types/Tables';
+import { Trans } from '@lingui/react/macro';
 import { api } from '../../App';
-import { AddItemButton } from '../../components/buttons/AddItemButton';
-import { YesNoButton } from '../../components/buttons/YesNoButton';
 import {
   DeleteItemAction,
   EditItemAction,
@@ -40,17 +48,15 @@ import {
   TableStatusRenderer
 } from '../../components/render/StatusRenderer';
 import { MachineSettingList } from '../../components/settings/SettingList';
-import { ApiEndpoints } from '../../enums/ApiEndpoints';
+import { useApi } from '../../contexts/ApiContext';
 import {
   useCreateApiFormModal,
   useDeleteApiFormModal,
   useEditApiFormModal
 } from '../../hooks/UseForm';
 import { useTable } from '../../hooks/UseTable';
-import { apiUrl } from '../../states/ApiState';
-import type { TableColumn } from '../Column';
 import { BooleanColumn } from '../ColumnRenderers';
-import { InvenTreeTable, type InvenTreeTableProps } from '../InvenTreeTable';
+import { InvenTreeTable } from '../InvenTreeTable';
 import type { MachineDriverI, MachineTypeI } from './MachineTypeTable';
 
 interface MachineI {
@@ -66,6 +72,13 @@ interface MachineI {
   machine_errors: string[];
   is_driver_available: boolean;
   restart_required: boolean;
+  properties: {
+    key: string;
+    value: string;
+    group: string;
+    type: 'str' | 'progress' | 'bool' | 'int' | 'float';
+    max_progress: number;
+  }[];
 }
 
 function MachineStatusIndicator({ machine }: Readonly<{ machine: MachineI }>) {
@@ -99,10 +112,38 @@ function MachineStatusIndicator({ machine }: Readonly<{ machine: MachineI }>) {
   );
 }
 
+/**
+ * Helper function to restart a machine with the provided ID
+ */
+function restartMachine({
+  machinePk,
+  callback
+}: {
+  machinePk: string;
+  callback?: () => void;
+}) {
+  api
+    .post(
+      apiUrl(ApiEndpoints.machine_restart, undefined, {
+        machine: machinePk
+      })
+    )
+    .then(() => {
+      notifications.show({
+        message: t`Machine restarted`,
+        color: 'green',
+        icon: <IconCheck size='1rem' />
+      });
+      callback?.();
+    });
+}
+
 export function useMachineTypeDriver({
   includeTypes = true,
   includeDrivers = true
 }: { includeTypes?: boolean; includeDrivers?: boolean } = {}) {
+  const api = useApi();
+
   const {
     data: machineTypes,
     isFetching: isMachineTypesFetching,
@@ -146,14 +187,16 @@ function MachineDrawer({
   machinePk: string;
   refreshTable: () => void;
 }>) {
+  const api = useApi();
   const navigate = useNavigate();
   const {
     data: machine,
     refetch,
-    isFetching: isMachineFetching
+    isLoading: isMachineFetching
   } = useQuery<MachineI>({
     enabled: true,
     queryKey: ['machine-detail', machinePk],
+    refetchInterval: 5 * 1000,
     queryFn: () =>
       api
         .get(apiUrl(ApiEndpoints.machine_list, machinePk))
@@ -188,26 +231,6 @@ function MachineDrawer({
     refreshTable();
   }, [refetch, refreshTable]);
 
-  const restartMachine = useCallback(
-    (machinePk: string) => {
-      api
-        .post(
-          apiUrl(ApiEndpoints.machine_restart, undefined, {
-            machine: machinePk
-          })
-        )
-        .then(() => {
-          refreshAll();
-          notifications.show({
-            message: t`Machine restarted`,
-            color: 'green',
-            icon: <IconCheck size='1rem' />
-          });
-        });
-    },
-    [refreshAll]
-  );
-
   const machineEditModal = useEditApiFormModal({
     title: t`Edit machine`,
     url: ApiEndpoints.machine_list,
@@ -228,7 +251,9 @@ function MachineDrawer({
     url: ApiEndpoints.machine_list,
     pk: machinePk,
     preFormContent: (
-      <Text>{t`Are you sure you want to remove the machine "${machine?.name}"?`}</Text>
+      <Alert color='red'>
+        {t`Are you sure you want to remove this machine?`}
+      </Alert>
     ),
     onFormSuccess: () => {
       refreshTable();
@@ -236,18 +261,29 @@ function MachineDrawer({
     }
   });
 
+  const groupedProperties = useMemo(() => {
+    if (!machine?.properties) return [];
+    const groups: string[] = []; // track ordered list of groups
+    const groupMap: { [key: string]: typeof machine.properties } = {};
+    for (const prop of machine.properties) {
+      if (!groups.includes(prop.group)) groups.push(prop.group);
+      if (!groupMap[prop.group]) groupMap[prop.group] = [];
+      groupMap[prop.group].push(prop);
+    }
+
+    return groups.map((g) => ({ group: g, properties: groupMap[g] }));
+  }, [machine?.properties]);
+
   return (
     <>
       <Stack gap='xs'>
         {machineEditModal.modal}
         {machineDeleteModal.modal}
-
         <Group justify='space-between'>
           <Group>
             {machine && <MachineStatusIndicator machine={machine} />}
-            <Title order={4}>{machine?.name}</Title>
+            <StylishText size='md'>{machine?.name ?? t`Machine`}</StylishText>
           </Group>
-
           <Group>
             {machine?.restart_required && (
               <Badge color='red'>
@@ -276,7 +312,14 @@ function MachineDrawer({
                   indicator: machine?.restart_required
                     ? { color: 'red' }
                     : undefined,
-                  onClick: () => machine && restartMachine(machine?.pk)
+                  onClick: () => {
+                    if (machine) {
+                      restartMachine({
+                        machinePk: machine?.pk,
+                        callback: refreshAll
+                      });
+                    }
+                  }
                 }
               ]}
             />
@@ -285,14 +328,22 @@ function MachineDrawer({
 
         <Accordion
           multiple
-          defaultValue={['machine-info', 'machine-settings', 'driver-settings']}
+          defaultValue={[
+            'machine-info',
+            'machine-properties',
+            'machine-settings',
+            'driver-settings'
+          ]}
         >
-          <Accordion.Item value='machine-info'>
+          <Accordion.Item
+            key={`machine-info-${machinePk}`}
+            value='machine-info'
+          >
             <Accordion.Control>
-              <StylishText size='lg'>{t`Machine Information`}</StylishText>
+              <StylishText size='lg'>{t`General`}</StylishText>
             </Accordion.Control>
             <Accordion.Panel>
-              <Card withBorder>
+              <Paper withBorder p='md'>
                 <Stack gap='md'>
                   <Stack pos='relative' gap='xs'>
                     <LoadingOverlay
@@ -340,7 +391,7 @@ function MachineDrawer({
                         ) : (
                           StatusRenderer({
                             status: `${machine?.status || -1}`,
-                            type: `MachineStatus__${machine?.status_model}` as any
+                            type: `${machine?.status_model}` as any
                           })
                         )}
                         <Text fz='sm'>{machine?.status_text}</Text>
@@ -369,38 +420,114 @@ function MachineDrawer({
                     </Group>
                   </Stack>
                 </Stack>
-              </Card>
+              </Paper>
+            </Accordion.Panel>
+          </Accordion.Item>
+          <Accordion.Item
+            key={`machine-properties-${machinePk}`}
+            value='machine-properties'
+          >
+            <Accordion.Control>
+              <StylishText size='lg'>{t`Properties`}</StylishText>
+            </Accordion.Control>
+            <Accordion.Panel>
+              <Paper withBorder p='md'>
+                <Stack gap='sm'>
+                  {groupedProperties.map(({ group, properties }) => (
+                    <Stack key={group} gap={0}>
+                      {group && (
+                        <Text fz='sm' fw={700} mb={2}>
+                          {group}
+                        </Text>
+                      )}
+                      <Table
+                        variant='vertical'
+                        withTableBorder
+                        verticalSpacing={4}
+                      >
+                        <Table.Tbody>
+                          {properties.map((prop) => (
+                            <Table.Tr key={prop.key}>
+                              <Table.Th w={250}>{prop.key}</Table.Th>
+                              <Table.Td>
+                                {prop.type === 'bool' ? (
+                                  <YesNoButton
+                                    value={
+                                      `${prop.value}`.toLowerCase() === 'true'
+                                    }
+                                  />
+                                ) : prop.type === 'progress' ? (
+                                  <Group>
+                                    <Progress
+                                      value={
+                                        (Number.parseInt(prop.value) /
+                                          prop.max_progress) *
+                                        100
+                                      }
+                                      flex={1}
+                                    />
+                                    <Text>
+                                      {prop.value} / {prop.max_progress}
+                                    </Text>
+                                  </Group>
+                                ) : prop.type === 'int' ? (
+                                  <Text size='sm'>{prop.value}</Text>
+                                ) : prop.type === 'float' ? (
+                                  <Text size='sm'>
+                                    {formatDecimal(
+                                      Number.parseFloat(prop.value),
+                                      { digits: 4 }
+                                    )}
+                                  </Text>
+                                ) : (
+                                  <Text size='sm'>{prop.value}</Text>
+                                )}
+                              </Table.Td>
+                            </Table.Tr>
+                          ))}
+                        </Table.Tbody>
+                      </Table>
+                    </Stack>
+                  ))}
+                </Stack>
+              </Paper>
             </Accordion.Panel>
           </Accordion.Item>
           {machine?.is_driver_available && (
-            <Accordion.Item value='machine-settings'>
+            <Accordion.Item
+              key={`machine-settings-${machinePk}`}
+              value='machine-settings'
+            >
               <Accordion.Control>
                 <StylishText size='lg'>{t`Machine Settings`}</StylishText>
               </Accordion.Control>
               <Accordion.Panel>
-                <Card withBorder>
+                <Paper withBorder p='xs'>
                   <MachineSettingList
                     machinePk={machinePk}
                     configType='M'
                     onChange={refreshAll}
                   />
-                </Card>
+                </Paper>
               </Accordion.Panel>
             </Accordion.Item>
           )}
           {machine?.is_driver_available && (
-            <Accordion.Item value='driver-settings'>
+            <Accordion.Item
+              key={`driver-settings-${machinePk}`}
+              value='driver-settings'
+            >
               <Accordion.Control>
                 <StylishText size='lg'>{t`Driver Settings`}</StylishText>
               </Accordion.Control>
               <Accordion.Panel>
-                <Card withBorder>
+                <Paper withBorder p='xs'>
                   <MachineSettingList
                     machinePk={machinePk}
                     configType='D'
                     onChange={refreshAll}
                   />
-                </Card>
+                </Paper>
               </Accordion.Panel>
             </Accordion.Item>
           )}
@@ -484,13 +611,20 @@ export function MachineListTable({
         accessor: 'status',
         sortable: false,
         render: (record) => {
-          const renderer = TableStatusRenderer(
-            `MachineStatus__${record.status_model}` as any
-          );
+          const renderer = TableStatusRenderer(`${record.status_model}` as any);
           if (renderer && record.status !== -1) {
             return renderer(record);
           }
         }
+      },
+      {
+        accessor: 'status_text',
+        sortable: false
+      },
+      {
+        accessor: 'machine_errors',
+        sortable: false,
+        render: (record) => record.machine_errors.join(', ')
       }
     ],
     [machineTypes]
@@ -511,7 +645,7 @@ export function MachineListTable({
   }, [machineDrivers, createFormMachineType]);
 
   const createMachineForm = useCreateApiFormModal({
-    title: t`Add machine`,
+    title: t`Add Machine`,
     url: ApiEndpoints.machine_list,
     fields: {
       name: {},
@@ -549,6 +683,65 @@ export function MachineListTable({
     }
   });
 
+  const [selectedMachinePk, setSelectedMachinePk] = useState<
+    string | undefined
+  >(undefined);
+
+  const deleteMachineForm = useDeleteApiFormModal({
+    title: t`Delete Machine`,
+    successMessage: t`Machine successfully deleted.`,
+    url: ApiEndpoints.machine_list,
+    pk: selectedMachinePk,
+    preFormContent: (
+      <Alert color='red'>
+        {t`Are you sure you want to remove this machine?`}
+      </Alert>
+    ),
+    table: table
+  });
+
+  const editMachineForm = useEditApiFormModal({
+    title: t`Edit Machine`,
+    url: ApiEndpoints.machine_list,
+    pk: selectedMachinePk,
+    fields: {
+      name: {},
+      active: {}
+    },
+    table: table
+  });
+
+  const rowActions = useCallback((record: any): RowAction[] => {
+    return [
+      {
+        icon: <IconRefresh />,
+        title: t`Restart Machine`,
+        onClick: () => {
+          restartMachine({
+            machinePk: record.pk,
+            callback: () => {
+              table.refreshTable();
+            }
+          });
+        }
+      },
+      RowEditAction({
+        title: t`Edit machine`,
+        onClick: () => {
+          setSelectedMachinePk(record.pk);
+          editMachineForm.open();
+        }
+      }),
+      RowDeleteAction({
+        title: t`Delete Machine`,
+        onClick: () => {
+          setSelectedMachinePk(record.pk);
+          deleteMachineForm.open();
+        }
+      })
+    ];
+  }, []);
+
   const tableActions = useMemo(() => {
     return [
       <AddItemButton
@@ -565,6 +758,8 @@ export function MachineListTable({
   return (
     <>
       {createMachineForm.modal}
+      {editMachineForm.modal}
+      {deleteMachineForm.modal}
       {renderMachineDrawer && (
         <DetailDrawer
           title={t`Machine Detail`}
@@ -593,7 +788,8 @@ export function MachineListTable({
                 ? `machine-${machine.pk}/`
                 : `../machine-${machine.pk}/`
             ),
-          tableActions,
+          rowActions: rowActions,
+          tableActions: tableActions,
           params: {
             ...props.params
           },

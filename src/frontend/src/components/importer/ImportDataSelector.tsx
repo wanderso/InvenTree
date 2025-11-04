@@ -1,4 +1,4 @@
-import { t } from '@lingui/macro';
+import { t } from '@lingui/core/macro';
 import { Group, HoverCard, Paper, Space, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
@@ -9,28 +9,28 @@ import {
 } from '@tabler/icons-react';
 import { type ReactNode, useCallback, useMemo, useState } from 'react';
 
-import { api } from '../../App';
-import { ApiEndpoints } from '../../enums/ApiEndpoints';
-import { cancelEvent } from '../../functions/events';
+import { ActionButton } from '@lib/components/ActionButton';
+import { ProgressBar } from '@lib/components/ProgressBar';
+import {
+  type RowAction,
+  RowDeleteAction,
+  RowEditAction
+} from '@lib/components/RowActions';
+import { YesNoButton } from '@lib/components/YesNoButton';
+import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import { apiUrl } from '@lib/functions/Api';
+import { cancelEvent } from '@lib/functions/Events';
+import type { TableFilter } from '@lib/types/Filters';
+import type { ApiFormFieldSet } from '@lib/types/Forms';
+import type { TableColumn } from '@lib/types/Tables';
+import { useApi } from '../../contexts/ApiContext';
 import {
   useDeleteApiFormModal,
   useEditApiFormModal
 } from '../../hooks/UseForm';
 import type { ImportSessionState } from '../../hooks/UseImportSession';
 import { useTable } from '../../hooks/UseTable';
-import { apiUrl } from '../../states/ApiState';
-import type { TableColumn } from '../../tables/Column';
-import type { TableFilter } from '../../tables/Filter';
 import { InvenTreeTable } from '../../tables/InvenTreeTable';
-import {
-  type RowAction,
-  RowDeleteAction,
-  RowEditAction
-} from '../../tables/RowActions';
-import { ActionButton } from '../buttons/ActionButton';
-import { YesNoButton } from '../buttons/YesNoButton';
-import type { ApiFormFieldSet } from '../forms/fields/ApiFormField';
-import { ProgressBar } from '../items/ProgressBar';
 import { RenderRemoteInstance } from '../render/Instance';
 
 function ImporterDataCell({
@@ -131,6 +131,7 @@ export default function ImporterDataSelector({
 }: Readonly<{
   session: ImportSessionState;
 }>) {
+  const api = useApi();
   const table = useTable('dataimporter');
 
   const [selectedFieldNames, setSelectedFieldNames] = useState<string[]>([]);
@@ -150,6 +151,10 @@ export default function ImporterDataSelector({
             ...filters,
             ...session.fieldFilters[field]
           };
+        }
+
+        if (field == 'id') {
+          continue; // Skip the ID field
         }
 
         fields[field] = {
@@ -224,6 +229,10 @@ export default function ImporterDataSelector({
 
   const editCell = useCallback(
     (row: any, col: any) => {
+      if (col.field == 'id') {
+        return; // Cannot edit the ID field
+      }
+
       setSelectedRow(row);
       setSelectedFieldNames([col.field]);
       editRow.open();
@@ -276,7 +285,7 @@ export default function ImporterDataSelector({
                 <IconCircleDashedCheck color='blue' size={16} />
               )}
               {!row.complete && !row.valid && (
-                <HoverCard openDelay={50} closeDelay={100}>
+                <HoverCard openDelay={50} closeDelay={100} position='top-start'>
                   <HoverCard.Target>
                     <IconExclamationCircle color='red' size={16} />
                   </HoverCard.Target>

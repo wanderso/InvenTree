@@ -1,9 +1,13 @@
-import { t } from '@lingui/macro';
+import { t } from '@lingui/core/macro';
 import { Accordion, Grid, Skeleton, Stack } from '@mantine/core';
 import { IconInfoCircle, IconList, IconPackages } from '@tabler/icons-react';
 import { type ReactNode, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 
+import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import { ModelType } from '@lib/enums/ModelType';
+import { UserRoles } from '@lib/enums/Roles';
+import { apiUrl } from '@lib/functions/Api';
 import AdminButton from '../../components/buttons/AdminButton';
 import PrimaryActionButton from '../../components/buttons/PrimaryActionButton';
 import { PrintingActions } from '../../components/buttons/PrintingActions';
@@ -30,9 +34,6 @@ import type { PanelType } from '../../components/panels/Panel';
 import { PanelGroup } from '../../components/panels/PanelGroup';
 import { StatusRenderer } from '../../components/render/StatusRenderer';
 import { formatCurrency } from '../../defaults/formatters';
-import { ApiEndpoints } from '../../enums/ApiEndpoints';
-import { ModelType } from '../../enums/ModelType';
-import { UserRoles } from '../../enums/Roles';
 import { usePurchaseOrderFields } from '../../forms/PurchaseOrderForms';
 import {
   useCreateApiFormModal,
@@ -40,8 +41,7 @@ import {
 } from '../../hooks/UseForm';
 import { useInstance } from '../../hooks/UseInstance';
 import useStatusCodes from '../../hooks/UseStatusCodes';
-import { apiUrl } from '../../states/ApiState';
-import { useGlobalSettingsState } from '../../states/SettingsState';
+import { useGlobalSettingsState } from '../../states/SettingsStates';
 import { useUserState } from '../../states/UserState';
 import ExtraLineItemTable from '../../tables/general/ExtraLineItemTable';
 import { PurchaseOrderLineItemTable } from '../../tables/purchasing/PurchaseOrderLineItemTable';
@@ -59,8 +59,7 @@ export default function PurchaseOrderDetail() {
   const {
     instance: order,
     instanceQuery,
-    refreshInstance,
-    requestStatus
+    refreshInstance
   } = useInstance({
     endpoint: ApiEndpoints.purchase_order_list,
     pk: id,
@@ -94,14 +93,38 @@ export default function PurchaseOrderDetail() {
     }
   });
 
+  const poStatus = useStatusCodes({ modelType: ModelType.purchaseorder });
+
+  const orderOpen: boolean = useMemo(() => {
+    return (
+      order.status == poStatus.PENDING ||
+      order.status == poStatus.PLACED ||
+      order.status == poStatus.ON_HOLD
+    );
+  }, [order, poStatus]);
+
+  const lineItemsEditable: boolean = useMemo(() => {
+    if (orderOpen) {
+      return true;
+    } else {
+      return globalSettings.isSet('PURCHASEORDER_EDIT_COMPLETED_ORDERS');
+    }
+  }, [orderOpen, globalSettings]);
+
+  const duplicatePurchaseOrderInitialData = useMemo(() => {
+    const data = { ...order };
+    // if we set the reference to null/undefined, it will be left blank in the form
+    // if we omit the reference altogether, it will be auto-generated via reference pattern
+    // from the OPTIONS response
+    delete data.reference;
+    return data;
+  }, [order]);
+
   const duplicatePurchaseOrder = useCreateApiFormModal({
     url: ApiEndpoints.purchase_order_list,
     title: t`Add Purchase Order`,
     fields: duplicatePurchaseOrderFields,
-    initialData: {
-      ...order,
-      reference: undefined
-    },
+    initialData: duplicatePurchaseOrderInitialData,
     follow: true,
     modelType: ModelType.purchaseorder
   });
@@ -185,7 +208,7 @@ export default function PurchaseOrderDetail() {
         label: t`Total Cost`,
         value_formatter: () => {
           return formatCurrency(order?.total_price, {
-            currency: order?.order_currency ?? order?.supplier_detail?.currency
+            currency: order?.order_currency || order?.supplier_detail?.currency
           });
         }
       }
@@ -201,14 +224,28 @@ export default function PurchaseOrderDetail() {
         hidden: !order.link
       },
       {
-        type: 'link',
-        model: ModelType.contact,
-        link: false,
-        name: 'contact',
+        type: 'text',
+        name: 'contact_detail.name',
         label: t`Contact`,
         icon: 'user',
         copy: true,
         hidden: !order.contact
+      },
+      {
+        type: 'text',
+        name: 'contact_detail.email',
+        label: t`Contact Email`,
+        icon: 'email',
+        copy: true,
+        hidden: !order.contact_detail?.email
+      },
+      {
+        type: 'text',
+        name: 'contact_detail.phone',
+        label: t`Contact Phone`,
+        icon: 'phone',
+        copy: true,
+        hidden: !order.contact_detail?.phone
       },
       {
         type: 'text',
@@ -217,6 +254,13 @@ export default function PurchaseOrderDetail() {
         icon: 'reference',
         copy: true,
         hidden: !order.project_code
+      },
+      {
+        type: 'text',
+        name: 'responsible',
+        label: t`Responsible`,
+        badge: 'owner',
+        hidden: !order.responsible
       }
     ];
 
@@ -225,6 +269,7 @@ export default function PurchaseOrderDetail() {
         type: 'date',
         name: 'creation_date',
         label: t`Creation Date`,
+        copy: true,
         icon: 'calendar'
       },
       {
@@ -237,9 +282,18 @@ export default function PurchaseOrderDetail() {
       },
       {
         type: 'date',
+        name: 'start_date',
+        label: t`Start Date`,
+        icon: 'calendar',
+        copy: true,
+        hidden: !order.start_date
+      },
+      {
+        type: 'date',
         name: 'target_date',
         label: t`Target Date`,
         icon: 'calendar',
+        copy: true,
         hidden: !order.target_date
       },
       {
@@ -249,28 +303,19 @@ export default function PurchaseOrderDetail() {
         label: t`Completion Date`,
         copy: true,
         hidden: !order.complete_date
-      },
-      {
-        type: 'text',
-        name: 'responsible',
-        label: t`Responsible`,
-        badge: 'owner',
-        hidden: !order.responsible
       }
     ];
 
     return (
       <ItemDetailsGrid>
-        <Grid>
-          <Grid.Col span={4}>
-            <DetailsImage
-              appRole={UserRoles.purchase_order}
-              apiPath={ApiEndpoints.company_list}
-              src={order.supplier_detail?.image}
-              pk={order.supplier}
-            />
-          </Grid.Col>
-          <Grid.Col span={8}>
+        <Grid grow>
+          <DetailsImage
+            appRole={UserRoles.purchase_order}
+            apiPath={ApiEndpoints.company_list}
+            src={order.supplier_detail?.image}
+            pk={order.supplier}
+          />
+          <Grid.Col span={{ base: 12, sm: 8 }}>
             <DetailsTable fields={tl} item={order} />
           </Grid.Col>
         </Grid>
@@ -305,8 +350,10 @@ export default function PurchaseOrderDetail() {
               <Accordion.Panel>
                 <PurchaseOrderLineItemTable
                   order={order}
+                  orderDetailRefresh={refreshInstance}
                   currency={orderCurrency}
                   orderId={Number(id)}
+                  editable={lineItemsEditable}
                   supplierId={Number(order.supplier)}
                 />
               </Accordion.Panel>
@@ -319,7 +366,9 @@ export default function PurchaseOrderDetail() {
                 <ExtraLineItemTable
                   endpoint={ApiEndpoints.purchase_order_extra_line_list}
                   orderId={order.pk}
+                  orderDetailRefresh={refreshInstance}
                   currency={orderCurrency}
+                  editable={lineItemsEditable}
                   role={UserRoles.purchase_order}
                 />
               </Accordion.Panel>
@@ -350,8 +399,6 @@ export default function PurchaseOrderDetail() {
       })
     ];
   }, [order, id, user]);
-
-  const poStatus = useStatusCodes({ modelType: ModelType.purchaseorder });
 
   const issueOrder = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.purchase_order_issue, order.pk),
@@ -431,6 +478,7 @@ export default function PurchaseOrderDetail() {
       <PrintingActions
         modelType={ModelType.purchaseorder}
         items={[order.pk]}
+        enableLabels
         enableReports
       />,
       <OptionsActionDropdown
@@ -475,6 +523,16 @@ export default function PurchaseOrderDetail() {
         ];
   }, [order, instanceQuery]);
 
+  const subtitle: string = useMemo(() => {
+    let t = order.supplier_detail?.name || '';
+
+    if (order.supplier_reference) {
+      t += ` (${order.supplier_reference})`;
+    }
+
+    return t;
+  }, [order]);
+
   return (
     <>
       {issueOrder.modal}
@@ -484,16 +542,21 @@ export default function PurchaseOrderDetail() {
       {editPurchaseOrder.modal}
       {duplicatePurchaseOrder.modal}
       <InstanceDetail
-        status={requestStatus}
-        loading={instanceQuery.isFetching}
+        query={instanceQuery}
         requiredRole={UserRoles.purchase_order}
       >
         <Stack gap='xs'>
           <PageDetail
             title={`${t`Purchase Order`}: ${order.reference}`}
-            subtitle={order.description}
+            subtitle={subtitle}
             imageUrl={order.supplier_detail?.image}
             breadcrumbs={[{ name: t`Purchasing`, url: '/purchasing/' }]}
+            lastCrumb={[
+              {
+                name: order.reference,
+                url: `/purchasing/purchase-order/${order.pk}`
+              }
+            ]}
             actions={poActions}
             badges={orderBadges}
             editAction={editPurchaseOrder.open}
@@ -504,6 +567,7 @@ export default function PurchaseOrderDetail() {
             panels={orderPanels}
             model={ModelType.purchaseorder}
             instance={order}
+            reloadInstance={refreshInstance}
             id={order.pk}
           />
         </Stack>

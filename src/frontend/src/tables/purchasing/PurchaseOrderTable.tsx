@@ -1,26 +1,28 @@
-import { t } from '@lingui/macro';
+import { t } from '@lingui/core/macro';
 import { useMemo } from 'react';
 
-import { AddItemButton } from '../../components/buttons/AddItemButton';
-import { Thumbnail } from '../../components/images/Thumbnail';
+import { AddItemButton } from '@lib/components/AddItemButton';
+import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import { ModelType } from '@lib/enums/ModelType';
+import { UserRoles } from '@lib/enums/Roles';
+import { apiUrl } from '@lib/functions/Api';
+import type { TableFilter } from '@lib/types/Filters';
 import { formatCurrency } from '../../defaults/formatters';
-import { ApiEndpoints } from '../../enums/ApiEndpoints';
-import { ModelType } from '../../enums/ModelType';
-import { UserRoles } from '../../enums/Roles';
 import { usePurchaseOrderFields } from '../../forms/PurchaseOrderForms';
-import { useOwnerFilters, useProjectCodeFilters } from '../../hooks/UseFilter';
 import { useCreateApiFormModal } from '../../hooks/UseForm';
 import { useTable } from '../../hooks/UseTable';
-import { apiUrl } from '../../states/ApiState';
 import { useUserState } from '../../states/UserState';
 import {
+  CompanyColumn,
   CompletionDateColumn,
+  CreatedByColumn,
   CreationDateColumn,
   DescriptionColumn,
   LineItemsProgressColumn,
   ProjectCodeColumn,
   ReferenceColumn,
   ResponsibleColumn,
+  StartDateColumn,
   StatusColumn,
   TargetDateColumn
 } from '../ColumnRenderers';
@@ -30,13 +32,17 @@ import {
   CompletedBeforeFilter,
   CreatedAfterFilter,
   CreatedBeforeFilter,
+  CreatedByFilter,
   HasProjectCodeFilter,
   MaxDateFilter,
   MinDateFilter,
+  OrderStatusFilter,
   OutstandingFilter,
   OverdueFilter,
-  StatusFilterOptions,
-  type TableFilter,
+  ProjectCodeFilter,
+  ResponsibleFilter,
+  StartDateAfterFilter,
+  StartDateBeforeFilter,
   TargetDateAfterFilter,
   TargetDateBeforeFilter
 } from '../Filter';
@@ -47,25 +53,19 @@ import { InvenTreeTable } from '../InvenTreeTable';
  */
 export function PurchaseOrderTable({
   supplierId,
-  supplierPartId
+  supplierPartId,
+  externalBuildId
 }: Readonly<{
   supplierId?: number;
   supplierPartId?: number;
+  externalBuildId?: number;
 }>) {
   const table = useTable('purchase-order');
   const user = useUserState();
 
-  const projectCodeFilters = useProjectCodeFilters();
-  const responsibleFilters = useOwnerFilters();
-
   const tableFilters: TableFilter[] = useMemo(() => {
     return [
-      {
-        name: 'status',
-        label: t`Status`,
-        description: t`Filter by order status`,
-        choiceFunction: StatusFilterOptions(ModelType.purchaseorder)
-      },
+      OrderStatusFilter({ model: ModelType.purchaseorder }),
       OutstandingFilter(),
       OverdueFilter(),
       AssignedToMeFilter(),
@@ -75,51 +75,60 @@ export function PurchaseOrderTable({
       CreatedAfterFilter(),
       TargetDateBeforeFilter(),
       TargetDateAfterFilter(),
+      StartDateBeforeFilter(),
+      StartDateAfterFilter(),
+      {
+        name: 'has_target_date',
+        type: 'boolean',
+        label: t`Has Target Date`,
+        description: t`Show orders with a target date`
+      },
+      {
+        name: 'has_start_date',
+        type: 'boolean',
+        label: t`Has Start Date`,
+        description: t`Show orders with a start date`
+      },
       CompletedBeforeFilter(),
       CompletedAfterFilter(),
-      {
-        name: 'project_code',
-        label: t`Project Code`,
-        description: t`Filter by project code`,
-        choices: projectCodeFilters.choices
-      },
+      ProjectCodeFilter(),
       HasProjectCodeFilter(),
-      {
-        name: 'assigned_to',
-        label: t`Responsible`,
-        description: t`Filter by responsible owner`,
-        choices: responsibleFilters.choices
-      }
+      ResponsibleFilter(),
+      CreatedByFilter()
     ];
-  }, [projectCodeFilters.choices, responsibleFilters.choices]);
+  }, []);
 
   const tableColumns = useMemo(() => {
     return [
-      ReferenceColumn({}),
+      ReferenceColumn({
+        switchable: false
+      }),
       DescriptionColumn({}),
       {
         accessor: 'supplier__name',
         title: t`Supplier`,
         sortable: true,
-        render: (record: any) => {
-          const supplier = record.supplier_detail ?? {};
-
-          return (
-            <Thumbnail
-              src={supplier?.image}
-              alt={supplier.name}
-              text={supplier.name}
-            />
-          );
-        }
+        render: (record: any) => (
+          <CompanyColumn company={record.supplier_detail} />
+        )
       },
       {
         accessor: 'supplier_reference'
       },
-      LineItemsProgressColumn(),
+      LineItemsProgressColumn({}),
       StatusColumn({ model: ModelType.purchaseorder }),
-      ProjectCodeColumn({}),
-      CreationDateColumn({}),
+      ProjectCodeColumn({
+        defaultVisible: false
+      }),
+      CreationDateColumn({
+        defaultVisible: false
+      }),
+      CreatedByColumn({
+        defaultVisible: false
+      }),
+      StartDateColumn({
+        defaultVisible: false
+      }),
       TargetDateColumn({}),
       CompletionDateColumn({
         accessor: 'complete_date'
@@ -130,7 +139,7 @@ export function PurchaseOrderTable({
         sortable: true,
         render: (record: any) => {
           return formatCurrency(record.total_price, {
-            currency: record.order_currency ?? record.supplier_detail?.currency
+            currency: record.order_currency || record.supplier_detail?.currency
           });
         }
       },
@@ -173,14 +182,16 @@ export function PurchaseOrderTable({
           params: {
             supplier_detail: true,
             supplier: supplierId,
-            supplier_part: supplierPartId
+            supplier_part: supplierPartId,
+            external_build: externalBuildId
           },
           tableFilters: tableFilters,
           tableActions: tableActions,
           modelType: ModelType.purchaseorder,
           enableSelection: true,
           enableDownload: true,
-          enableReports: true
+          enableReports: true,
+          enableLabels: true
         }}
       />
     </>

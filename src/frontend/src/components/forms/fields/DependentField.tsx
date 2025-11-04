@@ -5,16 +5,13 @@ import {
   useFormContext
 } from 'react-hook-form';
 
-import { api } from '../../../App';
+import type { ApiFormFieldSet, ApiFormFieldType } from '@lib/types/Forms';
+import { useApi } from '../../../contexts/ApiContext';
 import {
   constructField,
   extractAvailableFields
 } from '../../../functions/forms';
-import {
-  ApiFormField,
-  type ApiFormFieldSet,
-  type ApiFormFieldType
-} from './ApiFormField';
+import { ApiFormField } from './ApiFormField';
 
 export function DependentField({
   control,
@@ -29,6 +26,7 @@ export function DependentField({
   url?: string;
   setFields?: React.Dispatch<React.SetStateAction<ApiFormFieldSet>>;
 }>) {
+  const api = useApi();
   const { watch, resetField } = useFormContext();
 
   const mappedFieldNames = useMemo(

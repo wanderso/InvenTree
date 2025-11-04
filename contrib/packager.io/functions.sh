@@ -5,7 +5,7 @@
 Color_Off='\033[0m'
 On_Red='\033[41m'
 PYTHON_FROM=9
-PYTHON_TO=12
+PYTHON_TO=14
 
 function detect_docker() {
   if [ -n "$(grep docker </proc/1/cgroup)" ]; then
@@ -120,6 +120,18 @@ function detect_local_env() {
     echo "# POI02| Printing local envs - after #++#"
     printenv
   fi
+
+  # Print branch and dir from VERSION file
+  if [ -f "${APP_HOME}/VERSION" ]; then
+    echo "# POI02| Loading environment variables from VERSION file"
+    content=$(cat "${APP_HOME}/VERSION")
+    # use grep to get the branch and target
+    INVENTREE_PKG_BRANCH=($(echo $content | grep -oP 'INVENTREE_PKG_BRANCH=\K[^ ]+'))
+    INVENTREE_PKG_TARGET=($(echo $content | grep -oP 'INVENTREE_PKG_TARGET=\K[^ ]+'))
+    echo "Running in a package environment build on branch $INVENTREE_PKG_BRANCH for target $INVENTREE_PKG_TARGET"
+  else
+    echo "# POI02| VERSION file not found"
+  fi
 }
 
 function detect_envs() {
@@ -154,6 +166,18 @@ function detect_envs() {
     export INVENTREE_DB_PASSWORD=$(jq -r '.[].database.PASSWORD' <<< ${INVENTREE_CONF_DATA})
     export INVENTREE_DB_HOST=$(jq -r '.[].database.HOST' <<< ${INVENTREE_CONF_DATA})
     export INVENTREE_DB_PORT=$(jq -r '.[].database.PORT' <<< ${INVENTREE_CONF_DATA})
+
+    # Parse site URL if not already set
+    if [ -z "${INVENTREE_SITE_URL}" ]; then
+      # Try to read out the app config
+      if [ -n "$(inventree config:get INVENTREE_SITE_URL)" ]; then
+        echo "# POI03| Getting site URL from app config"
+        export INVENTREE_SITE_URL=$(inventree config:get INVENTREE_SITE_URL)
+      else
+        echo "# POI03| Getting site URL from config file"
+        export INVENTREE_SITE_URL=$(jq -r '.[].site_url' <<< ${INVENTREE_CONF_DATA})
+      fi
+    fi
   else
     echo "# POI03| No config file found: ${INVENTREE_CONFIG_FILE}, using envs or defaults"
 
@@ -169,6 +193,7 @@ function detect_envs() {
     export INVENTREE_PLUGINS_ENABLED=true
     export INVENTREE_PLUGIN_FILE=${CONF_DIR}/plugins.txt
     export INVENTREE_SECRET_KEY_FILE=${CONF_DIR}/secret_key.txt
+    export INVENTREE_OIDC_PRIVATE_KEY_FILE=${CONF_DIR}/oidc.pem
 
     export INVENTREE_DB_ENGINE=${INVENTREE_DB_ENGINE:-sqlite3}
     export INVENTREE_DB_NAME=${INVENTREE_DB_NAME:-${DATA_DIR}/database.sqlite3}
@@ -176,6 +201,8 @@ function detect_envs() {
     export INVENTREE_DB_PASSWORD=${INVENTREE_DB_PASSWORD:-samplepassword}
     export INVENTREE_DB_HOST=${INVENTREE_DB_HOST:-samplehost}
     export INVENTREE_DB_PORT=${INVENTREE_DB_PORT:-123456}
+
+    export INVENTREE_SITE_URL=${INVENTREE_SITE_URL:-http://${INVENTREE_IP}}
 
     export SETUP_CONF_LOADED=true
   fi
@@ -196,6 +223,7 @@ function detect_envs() {
   fi
   echo "# POI03|    INVENTREE_DB_HOST=${INVENTREE_DB_HOST}"
   echo "# POI03|    INVENTREE_DB_PORT=${INVENTREE_DB_PORT}"
+  echo "# POI03|    INVENTREE_SITE_URL=${INVENTREE_SITE_URL}"
 }
 
 function create_initscripts() {
@@ -299,8 +327,8 @@ function update_or_install() {
 
   # Run update as app user
   echo "# POI12| Updating InvenTree"
-  sudo -u ${APP_USER} --preserve-env=$SETUP_ENVS bash -c "cd ${APP_HOME} && pip install wheel"
-  sudo -u ${APP_USER} --preserve-env=$SETUP_ENVS bash -c "cd ${APP_HOME} && invoke update | sed -e 's/^/# POI12| u | /;'"
+  sudo -u ${APP_USER} --preserve-env=$SETUP_ENVS bash -c "cd ${APP_HOME} && pip install wheel python-dotenv"
+  sudo -u ${APP_USER} --preserve-env=$SETUP_ENVS bash -c "cd ${APP_HOME} && set -e && invoke update | sed -e 's/^/# POI12| u | /;'"
 
   # Make sure permissions are correct again
   echo "# POI12| Set permissions for data dir and media: ${DATA_DIR}"
@@ -327,6 +355,8 @@ function set_env() {
   sed -i s=#plugin_file:\ \'/path/to/plugins.txt\'=plugin_file:\ \'${INVENTREE_PLUGIN_FILE}\'=g ${INVENTREE_CONFIG_FILE}
   # Secret key file
   sed -i s=#secret_key_file:\ \'/etc/inventree/secret_key.txt\'=secret_key_file:\ \'${INVENTREE_SECRET_KEY_FILE}\'=g ${INVENTREE_CONFIG_FILE}
+  # OIDC private key file
+  sed -i s=#oidc_private_key_file:\ \'/etc/inventree/oidc.pem\'=oidc_private_key_file:\ \'${INVENTREE_OIDC_PRIVATE_KEY_FILE}\'=g ${INVENTREE_CONFIG_FILE}
   # Debug mode
   sed -i s=debug:\ True=debug:\ False=g ${INVENTREE_CONFIG_FILE}
 
@@ -358,10 +388,15 @@ function set_site() {
 
   # Check if INVENTREE_SITE_URL in inventree config
   if [ -z "$(inventree config:get INVENTREE_SITE_URL)" ]; then
-    echo "# POI14| Setting up InvenTree site URL"
-    inventree config:set INVENTREE_SITE_URL=http://${INVENTREE_IP}
+    # Prefer current INVENTREE_SITE_URL if set
+    if [ -n "${INVENTREE_SITE_URL}" ]; then
+      inventree config:set INVENTREE_SITE_URL=${INVENTREE_SITE_URL}
+    else
+      echo "# POI14| Setting up InvenTree site URL"
+      inventree config:set INVENTREE_SITE_URL=http://${INVENTREE_IP}
+    fi
   else
-    echo "# POI14| Site URL already set - skipping"
+    echo "# POI14| Site URL already set to '$INVENTREE_SITE_URL' - skipping"
   fi
 }
 
@@ -370,11 +405,16 @@ function final_message() {
   echo -e "####################################################################################"
   echo -e "This InvenTree install uses nginx, the settings for the webserver can be found in"
   echo -e "${SETUP_NGINX_FILE}"
-  echo -e "Try opening InvenTree with either\nhttp://localhost/ or http://${INVENTREE_IP}/\n"
-  echo -e "Admin user data:"
-  echo -e "   Email: ${INVENTREE_ADMIN_EMAIL}"
-  echo -e "   Username: ${INVENTREE_ADMIN_USER}"
-  echo -e "   Password: ${INVENTREE_ADMIN_PASSWORD}"
+  echo -e "Try opening InvenTree with any of \n${INVENTREE_SITE_URL} , http://localhost/ or http://${INVENTREE_IP}/ \n"
+  # Print admin user data only if set
+  if [ -n "${INVENTREE_ADMIN_USER}" ]; then
+    echo -e "Admin user data:"
+    echo -e "   Email: ${INVENTREE_ADMIN_EMAIL}"
+    echo -e "   Username: ${INVENTREE_ADMIN_USER}"
+    echo -e "   Password: ${INVENTREE_ADMIN_PASSWORD}"
+  else
+    echo -e "No admin set during this operation - depending on the deployment method a admin user might have been created with an initial password saved in `$SETUP_ADMIN_PASSWORD_FILE`"
+  fi
   echo -e "####################################################################################"
 }
 

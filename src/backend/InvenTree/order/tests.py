@@ -12,7 +12,14 @@ from djmoney.money import Money
 
 import common.models
 import order.tasks
-from company.models import Company, SupplierPart
+from common.settings import get_global_setting, set_global_setting
+from company.models import Company, Contact, SupplierPart
+from InvenTree.helpers import current_date
+from InvenTree.unit_test import (
+    ExchangeRateMixin,
+    PluginRegistryMixin,
+    addUserPermission,
+)
 from order.status_codes import PurchaseOrderStatus
 from part.models import Part
 from stock.models import StockItem, StockLocation
@@ -21,7 +28,7 @@ from users.models import Owner
 from .models import PurchaseOrder, PurchaseOrderExtraLine, PurchaseOrderLineItem
 
 
-class OrderTest(TestCase):
+class OrderTest(ExchangeRateMixin, PluginRegistryMixin, TestCase):
     """Tests to ensure that the order models are functioning correctly."""
 
     fixtures = [
@@ -41,13 +48,56 @@ class OrderTest(TestCase):
         for pk in range(1, 8):
             order = PurchaseOrder.objects.get(pk=pk)
             self.assertEqual(
-                order.get_absolute_url(), f'/platform/purchasing/purchase-order/{pk}'
+                order.get_absolute_url(), f'/web/purchasing/purchase-order/{pk}'
             )
 
             self.assertEqual(order.reference, f'PO-{pk:04d}')
 
         line = PurchaseOrderLineItem.objects.get(pk=1)
         self.assertEqual(str(line), '100 x ACME0001 - PO-0001 - ACME')
+
+    def test_validate_dates(self):
+        """Test for validation of date fields."""
+        order = PurchaseOrder.objects.first()
+
+        order.start_date = current_date()
+        order.target_date = current_date() - timedelta(days=5)
+
+        with self.assertRaises(django_exceptions.ValidationError) as err:
+            order.clean()
+
+        self.assertIn('Target date must be after start date', err.exception.messages)
+        self.assertIn('Start date must be before target date', err.exception.messages)
+
+        order.target_date = current_date() + timedelta(days=5)
+
+        # This should now pass
+        order.clean()
+        order.save()
+
+    def test_validate_contact(self):
+        """Test for validation of linked Contact."""
+        order = PurchaseOrder.objects.first()
+
+        # Create a contact which does does not match the company
+        company = Company.objects.exclude(pk=order.supplier.pk).first()
+        self.assertIsNotNone(company)
+        contact = Contact.objects.create(company=company, name='Harold Henderson')
+
+        order.contact = contact
+
+        with self.assertRaises(django_exceptions.ValidationError) as err:
+            order.clean()
+
+        self.assertIn('Contact does not match selected company', err.exception.messages)
+
+        # Update the contact, point to the right company
+        contact.company = order.supplier
+        contact.save()
+
+        order.contact = contact
+        order.clean()  # Should not raise
+        order.save()
 
     def test_rebuild_reference(self):
         """Test that the reference_int field is correctly updated when the model is saved."""
@@ -58,6 +108,77 @@ class OrderTest(TestCase):
         order.reference = '12345XYZ'
         order.save()
         self.assertEqual(order.reference_int, 12345)
+
+    def test_locking(self):
+        """Test the (auto)locking functionality of the (Purchase)Order model."""
+        order = PurchaseOrder.objects.get(pk=1)
+
+        set_global_setting(PurchaseOrder.UNLOCK_SETTING, True)
+
+        order.status = PurchaseOrderStatus.PENDING
+        order.save()
+        self.assertFalse(order.check_locked())
+
+        order.status = PurchaseOrderStatus.COMPLETE
+        order.save()
+        self.assertFalse(order.check_locked())
+
+        order.add_line_item(SupplierPart.objects.get(pk=100), 100)
+        last_line = order.lines.last()
+        self.assertEqual(last_line.quantity, 100)
+
+        # Reset
+        order.status = PurchaseOrderStatus.PENDING
+        order.save()
+
+        # Turn on auto-locking
+        set_global_setting(PurchaseOrder.UNLOCK_SETTING, False)
+        # still not locked
+        self.assertFalse(order.check_locked())
+
+        order.status = PurchaseOrderStatus.COMPLETE
+
+        # The instance is locked, the db instance is not
+        self.assertFalse(order.check_locked(True))
+        self.assertTrue(order.check_locked())
+        order.save()
+
+        # Now everything is locked
+        self.assertTrue(order.check_locked(True))
+        self.assertTrue(order.check_locked())
+
+        # No editing allowed
+        with self.assertRaises(django_exceptions.ValidationError):
+            order.description = 'test1'
+            order.save()
+
+        order.refresh_from_db()
+        self.assertEqual(order.description, 'Ordering some screws')
+
+        # Also no adding of line items
+        with self.assertRaises(django_exceptions.ValidationError):
+            order.add_line_item(SupplierPart.objects.get(pk=100), 100)
+        # or deleting
+        with self.assertRaises(django_exceptions.ValidationError):
+            last_line.delete()
+
+        # Still can create a completed item
+        PurchaseOrder.objects.create(
+            supplier=Company.objects.get(pk=1),
+            reference='PO-99999',
+            status=PurchaseOrderStatus.COMPLETE,
+        )
+
+        # No editing (except status ;-) ) allowed
+        order.status = PurchaseOrderStatus.PENDING
+        order.save()
+
+        # Now it is a free for all again
+        order.description = 'test2'
+        order.save()
+
+        order.refresh_from_db()
+        self.assertEqual(order.description, 'test2')
 
     def test_overdue(self):
         """Test overdue status functionality."""
@@ -181,6 +302,7 @@ class OrderTest(TestCase):
 
         order.receive_line_item(line, loc, 50, user=None)
 
+        line.refresh_from_db()
         self.assertEqual(line.remaining(), 50)
 
         self.assertEqual(part.on_order, 1350)
@@ -271,6 +393,9 @@ class OrderTest(TestCase):
         # Receive 5x item against line_2
         po.receive_line_item(line_2, loc, 5, user=None)
 
+        line_1.refresh_from_db()
+        line_2.refresh_from_db()
+
         # Check that the line items have been updated correctly
         self.assertEqual(line_1.quantity, 3)
         self.assertEqual(line_1.received, 1)
@@ -305,12 +430,59 @@ class OrderTest(TestCase):
         self.assertEqual(si.quantity, 0.5)
         self.assertEqual(si.purchase_price, Money(100, 'USD'))
 
+    def test_receive_convert_currency(self):
+        """Test receiving orders with different currencies."""
+        # Setup some dummy exchange rates
+        self.generate_exchange_rates()
+
+        set_global_setting('INVENTREE_DEFAULT_CURRENCY', 'USD')
+        self.assertEqual(get_global_setting('INVENTREE_DEFAULT_CURRENCY'), 'USD')
+
+        # Enable auto conversion
+        set_global_setting('PURCHASEORDER_CONVERT_CURRENCY', True)
+
+        order = PurchaseOrder.objects.get(pk=7)
+        sku = SupplierPart.objects.get(SKU='ZERGM312')
+        loc = StockLocation.objects.get(id=1)
+
+        # Add a line item (in CAD)
+        line = order.add_line_item(sku, 100, purchase_price=Money(1.25, 'CAD'))
+
+        order.place_order()
+
+        # Receive a line item, should be converted to GBP
+        order.receive_line_item(line, loc, 50, user=None)
+        item = order.stock_items.order_by('-pk').first()
+
+        self.assertEqual(item.quantity, 50)
+        self.assertEqual(item.purchase_price_currency, 'USD')
+        self.assertAlmostEqual(item.purchase_price.amount, Decimal(0.7353), 3)
+
+        # Disable auto conversion
+        set_global_setting('PURCHASEORDER_CONVERT_CURRENCY', False)
+
+        order.receive_line_item(line, loc, 30, user=None)
+        item = order.stock_items.order_by('-pk').first()
+
+        self.assertEqual(item.quantity, 30)
+        self.assertEqual(item.purchase_price_currency, 'CAD')
+        self.assertAlmostEqual(item.purchase_price.amount, Decimal(1.25), 3)
+
     def test_overdue_notification(self):
         """Test overdue purchase order notification.
 
         Ensure that a notification is sent when a PurchaseOrder becomes overdue
         """
+        self.ensurePluginsLoaded()
+
         po = PurchaseOrder.objects.get(pk=1)
+
+        # Ensure that the right users have the right permissions
+        for user_id in [2, 4]:
+            user = get_user_model().objects.get(pk=user_id)
+            addUserPermission(user, 'order', 'purchaseorder', 'view')
+            user.is_active = True
+            user.save()
 
         # Created by 'sam'
         po.created_by = get_user_model().objects.get(pk=4)

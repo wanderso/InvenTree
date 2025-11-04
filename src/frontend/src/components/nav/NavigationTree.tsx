@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
   Divider,
   Drawer,
@@ -15,18 +16,23 @@ import {
 import {
   IconChevronDown,
   IconChevronRight,
+  IconExclamationCircle,
   IconSitemap
 } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { api } from '../../App';
-import type { ApiEndpoints } from '../../enums/ApiEndpoints';
-import type { ModelType } from '../../enums/ModelType';
-import { navigateToLink } from '../../functions/navigation';
-import { getDetailUrl } from '../../functions/urls';
-import { apiUrl } from '../../states/ApiState';
+import type { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import type { ModelType } from '@lib/enums/ModelType';
+import { apiUrl } from '@lib/functions/Api';
+import {
+  eventModified,
+  getDetailUrl,
+  navigateToLink
+} from '@lib/functions/Navigation';
+import { t } from '@lingui/core/macro';
+import { useApi } from '../../contexts/ApiContext';
 import { ApiIcon } from '../items/ApiIcon';
 import { StylishText } from '../items/StylishText';
 
@@ -48,6 +54,7 @@ export default function NavigationTree({
   modelType: ModelType;
   endpoint: ApiEndpoints;
 }>) {
+  const api = useApi();
   const navigate = useNavigate();
   const treeState = useTree();
 
@@ -63,16 +70,12 @@ export default function NavigationTree({
           }
         })
         .then((response) => response.data ?? [])
-        .catch((error) => {
-          console.error(`Error fetching ${modelType} tree`);
-          return [];
-        })
   });
 
   const follow = useCallback(
     (node: TreeNodeData, event?: any) => {
       const url = getDetailUrl(modelType, node.value);
-      if (event?.shiftKey || event?.ctrlKey) {
+      if (eventModified(event)) {
         navigateToLink(url, navigate, event);
       } else {
         onClose();
@@ -92,7 +95,7 @@ export default function NavigationTree({
     const nodes: Record<number, any> = {};
     const tree: TreeNodeData[] = [];
 
-    if (!query?.data?.length) {
+    if (!query || !query?.data?.length) {
       return [];
     }
 
@@ -141,6 +144,8 @@ export default function NavigationTree({
     (payload: RenderTreeNodePayload) => {
       return (
         <Group
+          p={3}
+          gap='xs'
           justify='left'
           key={payload.node.value}
           wrap='nowrap'
@@ -150,7 +155,7 @@ export default function NavigationTree({
             }
           }}
         >
-          <Space w={5 * payload.level} />
+          <Space w={10 * (payload.level - 1)} />
           <ActionIcon
             size='sm'
             variant='transparent'
@@ -167,6 +172,7 @@ export default function NavigationTree({
           <Anchor
             onClick={(event: any) => follow(payload.node, event)}
             aria-label={`nav-tree-item-${payload.node.value}`}
+            c='var(--mantine-color-text)'
           >
             {payload.node.label}
           </Anchor>
@@ -201,7 +207,13 @@ export default function NavigationTree({
       <Stack gap='xs'>
         <Divider />
         <LoadingOverlay visible={query.isFetching || query.isLoading} />
-        <Tree data={data} tree={treeState} renderNode={renderNode} />
+        {query.isError ? (
+          <Alert color='red' title={t`Error`} icon={<IconExclamationCircle />}>
+            {t`Error loading navigation tree.`}
+          </Alert>
+        ) : (
+          <Tree data={data} tree={treeState} renderNode={renderNode} />
+        )}
       </Stack>
     </Drawer>
   );

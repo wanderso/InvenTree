@@ -14,12 +14,11 @@ import {
   IconLogin
 } from '@tabler/icons-react';
 
-import { t } from '@lingui/macro';
-import { showNotification } from '@mantine/notifications';
-import { api } from '../../App';
-import { ApiEndpoints } from '../../enums/ApiEndpoints';
-import { apiUrl } from '../../states/ApiState';
-import type { Provider } from '../../states/states';
+import type { AuthProvider } from '@lib/types/Auth';
+import { t } from '@lingui/core/macro';
+import { ProviderLogin } from '../../functions/auth';
+
+import type { JSX } from 'react';
 
 const brandIcons: { [key: string]: JSX.Element } = {
   google: <IconBrandGoogle />,
@@ -35,48 +34,22 @@ const brandIcons: { [key: string]: JSX.Element } = {
   microsoft: <IconBrandAzure />
 };
 
-export function SsoButton({ provider }: Readonly<{ provider: Provider }>) {
-  function login() {
-    // set preferred provider
-    api
-      .put(
-        apiUrl(ApiEndpoints.ui_preference),
-        { preferred_method: 'pui' },
-        { headers: { Authorization: '' } }
-      )
-      .then(() => {
-        // redirect to login
-        window.location.href = provider.login;
-      })
-      .catch(() => {
-        showNotification({
-          title: t`Error`,
-          message: t`Sign in redirect failed.`,
-          color: 'red'
-        });
-      });
-  }
-
+export function SsoButton({ provider }: Readonly<{ provider: AuthProvider }>) {
   return (
     <Tooltip
-      label={
-        provider.login
-          ? t`You will be redirected to the provider for further actions.`
-          : t`This provider is not full set up.`
-      }
+      label={t`You will be redirected to the provider for further actions.`}
     >
       <Button
         leftSection={getBrandIcon(provider)}
         radius='xl'
         component='a'
-        onClick={login}
-        disabled={!provider.login}
+        onClick={() => ProviderLogin(provider)}
       >
-        {provider.display_name}
+        {provider.name}
       </Button>
     </Tooltip>
   );
 }
-function getBrandIcon(provider: Provider) {
+function getBrandIcon(provider: AuthProvider) {
   return brandIcons[provider.id] || <IconLogin />;
 }

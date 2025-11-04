@@ -6,6 +6,10 @@ title: FAQ
 
 Below is a list of frequently asked questions. If you are having issues with InvenTree please consult this list first!
 
+Also, you can refer to our [GitHub page](https://github.com/inventree/inventree/issues) for known issues and bug reports - perhaps your issue has already been reported!
+
+If you cannot resolve the issue, please refer to the [troubleshooting guide](./troubleshooting.md) for further assistance.
+
 ## Installation Issues
 
 ### Installing on Windows
@@ -25,6 +29,11 @@ Refer to the [invoke guide](./start/invoke.md#cant-find-any-collection-named-tas
 ### Invoke Version
 
 If the installed version of invoke is too old, users may see error messages during the installation procedure. Refer to the [invoke guide](./start/invoke.md#minimum-version) for more information.
+
+### INVE-E1 - No frontend included
+
+Make sure you are running a stable or production release of InvenTree. The frontend panel is not included in development releases.
+More Information: [Error Codes - INVE-E1](./settings/error_codes.md#inve-e1)
 
 ### No module named <xxx>
 
@@ -58,7 +67,7 @@ invoke install
 
 ### 'str' object has no attribute 'removeSuffix'
 
-This error occurs because your installed python version is not up to date. We [require Python {{ config.extra.min_python_version }} or newer](./start/intro.md#python-requirements)
+This error occurs because your installed python version is not up to date. We [require Python {{ config.extra.min_python_version }} or newer](./start/index.md#python-requirements)
 
 You (or your system administrator) needs to update python to meet the minimum requirements for InvenTree.
 

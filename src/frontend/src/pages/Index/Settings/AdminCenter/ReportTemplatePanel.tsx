@@ -1,11 +1,10 @@
-import { t } from '@lingui/macro';
-
-import { YesNoButton } from '../../../../components/buttons/YesNoButton';
-import { ApiEndpoints } from '../../../../enums/ApiEndpoints';
-import { ModelType } from '../../../../enums/ModelType';
+import { YesNoButton } from '@lib/components/YesNoButton';
+import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import { ModelType } from '@lib/enums/ModelType';
+import { t } from '@lingui/core/macro';
 import { TemplateTable } from '../../../../tables/settings/TemplateTable';
 
-export default function ReportTemplateTable() {
+function ReportTemplateTable() {
   return (
     <TemplateTable
       templateProps={{
@@ -22,6 +21,12 @@ export default function ReportTemplateTable() {
               <YesNoButton value={instance.landscape} />
             )
           },
+          merge: {
+            label: t`Merge`,
+            modelRenderer: (instance: any) => (
+              <YesNoButton value={instance.merge} />
+            )
+          },
           attach_to_model: {
             label: t`Attach to Model`,
             modelRenderer: (instance: any) => (
@@ -32,4 +37,8 @@ export default function ReportTemplateTable() {
       }}
     />
   );
+}
+
+export default function ReportTemplatePanel() {
+  return <ReportTemplateTable />;
 }

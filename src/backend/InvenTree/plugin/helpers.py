@@ -10,7 +10,6 @@ import traceback
 from importlib.metadata import entry_points
 from importlib.util import module_from_spec
 
-from django import template
 from django.conf import settings
 from django.core.exceptions import AppRegistryNotReady
 from django.db.utils import IntegrityError
@@ -50,9 +49,9 @@ class MixinNotImplementedError(NotImplementedError):
     """Error if necessary mixin function was not overwritten."""
 
 
-def log_error(error, reference: str = 'general'):
+def log_registry_error(error, reference: str = 'general'):
     """Log an plugin error."""
-    from plugin import registry
+    from plugin.registry import registry
 
     # make sure the registry is set up
     if reference not in registry.errors:
@@ -93,7 +92,7 @@ def handle_error(error, do_raise: bool = True, do_log: bool = True, log_name: st
         log_kwargs = {}
         if log_name:
             log_kwargs['reference'] = log_name
-        log_error({package_name: str(error)}, **log_kwargs)
+        log_registry_error({package_name: str(error)}, **log_kwargs)
 
     if do_raise:
         # do a straight raise if we are playing with environment variables at execution time, ignore the broken sample
@@ -186,7 +185,7 @@ def get_modules(pkg, path=None):
         except StopIteration:
             break
         except Exception as error:
-            log_error({pkg.__name__: str(error)}, 'discovery')
+            log_registry_error({pkg.__name__: str(error)}, 'discovery')
             continue
 
         try:
@@ -208,7 +207,7 @@ def get_modules(pkg, path=None):
             # this 'protects' against malformed plugin modules by more or less silently failing
 
             # log to stack
-            log_error({name: str(error)}, 'discovery')
+            log_registry_error({name: str(error)}, 'discovery')
 
     return [v for k, v in context.items()]
 
@@ -218,7 +217,7 @@ def get_classes(module) -> list:
     try:
         return inspect.getmembers(module, inspect.isclass)
     except Exception:
-        log_error({module.__name__: 'Could not get classes'}, 'discovery')
+        log_registry_error({module.__name__: 'Could not get classes'}, 'discovery')
         return []
 
 
@@ -241,38 +240,6 @@ def get_plugins(pkg, baseclass, path=None):
                 plugins.append(plugin)
 
     return plugins
-
-
-# endregion
-
-
-# region templates
-def render_template(plugin, template_file, context=None):
-    """Locate and render a template file, available in the global template context."""
-    try:
-        tmp = template.loader.get_template(template_file)
-    except template.TemplateDoesNotExist:
-        logger.exception(
-            "Plugin %s could not locate template '%s'", plugin.slug, template_file
-        )
-
-        return f"""
-        <div class='alert alert-block alert-danger'>
-        Template file <em>{template_file}</em> does not exist.
-        </div>
-        """
-
-    # Render with the provided context
-    html = tmp.render(context)
-
-    return html
-
-
-def render_text(text, context=None):
-    """Locate a raw string with provided context."""
-    ctx = template.Context(context)
-
-    return template.Template(text).render(ctx)
 
 
 # endregion

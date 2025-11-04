@@ -1,8 +1,9 @@
-import { t } from '@lingui/macro';
+import { t } from '@lingui/core/macro';
 import { Group, LoadingOverlay, Skeleton, Stack, Text } from '@mantine/core';
 import {
   IconCategory,
   IconInfoCircle,
+  IconListCheck,
   IconListDetails,
   IconPackages,
   IconSitemap
@@ -10,7 +11,12 @@ import {
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
+import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
+import { ModelType } from '@lib/enums/ModelType';
+import { UserRoles } from '@lib/enums/Roles';
+import { getDetailUrl } from '@lib/functions/Navigation';
 import AdminButton from '../../components/buttons/AdminButton';
+import StarredToggleButton from '../../components/buttons/StarredToggleButton';
 import {
   type DetailsField,
   DetailsTable
@@ -27,11 +33,7 @@ import NavigationTree from '../../components/nav/NavigationTree';
 import { PageDetail } from '../../components/nav/PageDetail';
 import type { PanelType } from '../../components/panels/Panel';
 import { PanelGroup } from '../../components/panels/PanelGroup';
-import { ApiEndpoints } from '../../enums/ApiEndpoints';
-import { ModelType } from '../../enums/ModelType';
-import { UserRoles } from '../../enums/Roles';
 import { partCategoryFields } from '../../forms/PartForms';
-import { getDetailUrl } from '../../functions/urls';
 import {
   useDeleteApiFormModal,
   useEditApiFormModal
@@ -40,6 +42,7 @@ import { useInstance } from '../../hooks/UseInstance';
 import { useUserState } from '../../states/UserState';
 import ParametricPartTable from '../../tables/part/ParametricPartTable';
 import { PartCategoryTable } from '../../tables/part/PartCategoryTable';
+import PartCategoryTemplateTable from '../../tables/part/PartCategoryTemplateTable';
 import { PartListTable } from '../../tables/part/PartTable';
 import { StockItemTable } from '../../tables/stock/StockItemTable';
 
@@ -63,8 +66,7 @@ export default function CategoryDetail() {
   const {
     instance: category,
     refreshInstance,
-    instanceQuery,
-    requestStatus
+    instanceQuery
   } = useInstance({
     endpoint: ApiEndpoints.category_list,
     hasPrimaryKey: true,
@@ -183,11 +185,11 @@ export default function CategoryDetail() {
   const deleteOptions = useMemo(() => {
     return [
       {
-        value: 0,
+        value: 'false',
         display_name: t`Move items to parent category`
       },
       {
-        value: 1,
+        value: 'true',
         display_name: t`Delete items`
       }
     ];
@@ -202,12 +204,14 @@ export default function CategoryDetail() {
         label: t`Parts Action`,
         description: t`Action for parts in this category`,
         choices: deleteOptions,
+        required: true,
         field_type: 'choice'
       },
       delete_child_categories: {
         label: t`Child Categories Action`,
         description: t`Action for child categories in this category`,
         choices: deleteOptions,
+        required: true,
         field_type: 'choice'
       }
     },
@@ -227,6 +231,14 @@ export default function CategoryDetail() {
         model={ModelType.partcategory}
         id={category.pk}
       />,
+      <StarredToggleButton
+        key='starred_change'
+        instance={category}
+        model={ModelType.partcategory}
+        successFunction={() => {
+          refreshInstance();
+        }}
+      />,
       <OptionsActionDropdown
         key='category-actions'
         tooltip={t`Category Actions`}
@@ -244,7 +256,7 @@ export default function CategoryDetail() {
         ]}
       />
     ];
-  }, [id, user, category.pk]);
+  }, [id, user, category.pk, category.starred]);
 
   const panels: PanelType[] = useMemo(
     () => [
@@ -256,7 +268,7 @@ export default function CategoryDetail() {
       },
       {
         name: 'subcategories',
-        label: t`Subcategories`,
+        label: id ? t`Subcategories` : t`Part Categories`,
         icon: <IconSitemap />,
         content: <PartCategoryTable parentId={id} />
       },
@@ -290,6 +302,13 @@ export default function CategoryDetail() {
         )
       },
       {
+        name: 'category_parameters',
+        label: t`Category Parameters`,
+        icon: <IconListCheck />,
+        hidden: !id || !category.pk,
+        content: <PartCategoryTemplateTable categoryId={category?.pk} />
+      },
+      {
         name: 'parameters',
         label: t`Part Parameters`,
         icon: <IconListDetails />,
@@ -316,8 +335,7 @@ export default function CategoryDetail() {
       {editCategory.modal}
       {deleteCategory.modal}
       <InstanceDetail
-        status={requestStatus}
-        loading={id ? instanceQuery.isFetching : false}
+        query={instanceQuery}
         requiredRole={UserRoles.part_category}
       >
         <Stack gap='xs'>
@@ -333,8 +351,8 @@ export default function CategoryDetail() {
             selectedId={category?.pk}
           />
           <PageDetail
-            title={t`Part Category`}
-            subtitle={category?.name}
+            title={(category?.name ?? id) ? t`Part Category` : t`Parts`}
+            subtitle={category?.description}
             icon={category?.icon && <ApiIcon name={category?.icon} />}
             breadcrumbs={breadcrumbs}
             breadcrumbAction={() => {
@@ -342,13 +360,16 @@ export default function CategoryDetail() {
             }}
             actions={categoryActions}
             editAction={editCategory.open}
-            editEnabled={user.hasChangePermission(ModelType.partcategory)}
+            editEnabled={
+              !!category?.pk && user.hasChangePermission(ModelType.partcategory)
+            }
           />
           <PanelGroup
             pageKey='partcategory'
             panels={panels}
             model={ModelType.partcategory}
             instance={category}
+            reloadInstance={refreshInstance}
             id={category.pk ?? null}
           />
         </Stack>

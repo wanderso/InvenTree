@@ -1,10 +1,10 @@
+import type { ApiFormFieldType } from '@lib/types/Forms';
+import { t } from '@lingui/core/macro';
 import { DateInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { useCallback, useId, useMemo } from 'react';
 import type { FieldValues, UseControllerReturn } from 'react-hook-form';
-
-import type { ApiFormFieldType } from './ApiFormField';
 
 dayjs.extend(customParseFormat);
 
@@ -22,8 +22,12 @@ export default function DateField({
     fieldState: { error }
   } = controller;
 
-  const valueFormat =
-    definition.field_type == 'date' ? 'YYYY-MM-DD' : 'YYYY-MM-DD HH:mm:ss';
+  const valueFormat = useMemo(() => {
+    // Determine the format based on the field type
+    return definition.field_type == 'date'
+      ? 'YYYY-MM-DD'
+      : 'YYYY-MM-DD HH:mm:ss';
+  }, [definition.field_type]);
 
   const onChange = useCallback(
     (value: any) => {
@@ -31,19 +35,20 @@ export default function DateField({
       if (value) {
         value = value.toString();
         value = dayjs(value).format(valueFormat);
+        value = value.toString().split('T')[0];
       }
 
       field.onChange(value);
       definition.onValueChange?.(value);
     },
-    [field.onChange, definition]
+    [field.onChange, definition, valueFormat]
   );
 
   const dateValue: Date | null = useMemo(() => {
     let dv: Date | null = null;
 
     if (field.value) {
-      dv = new Date(field.value);
+      dv = dayjs(field.value).toDate();
     }
 
     // Ensure that the date is valid
@@ -62,14 +67,15 @@ export default function DateField({
       ref={field.ref}
       type={undefined}
       error={definition.error ?? error?.message}
-      value={dateValue ?? null}
+      value={dateValue}
       clearable={!definition.required}
       onChange={onChange}
       valueFormat={valueFormat}
       label={definition.label}
       description={definition.description}
-      placeholder={definition.placeholder}
+      placeholder={definition.placeholder ?? t`Select date`}
       leftSection={definition.icon}
+      highlightToday
     />
   );
 }

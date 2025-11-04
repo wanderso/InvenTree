@@ -5,11 +5,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
 
-import { api } from '../App';
-import { ApiEndpoints } from '../enums/ApiEndpoints';
-import { resolveItem } from '../functions/conversion';
-import { apiUrl } from '../states/ApiState';
-import type { TableFilterChoice } from '../tables/Filter';
+import { resolveItem } from '@lib/functions/Conversion';
+import type { TableFilterChoice } from '@lib/types/Filters';
+import { useApi } from '../contexts/ApiContext';
 
 type UseFilterProps = {
   url: string;
@@ -20,6 +18,8 @@ type UseFilterProps = {
 };
 
 export function useFilters(props: UseFilterProps) {
+  const api = useApi();
+
   const query = useQuery({
     enabled: true,
     gcTime: 500,
@@ -39,8 +39,7 @@ export function useFilters(props: UseFilterProps) {
           }
 
           return data;
-        })
-        .catch((error) => []);
+        });
     }
   });
 
@@ -64,43 +63,4 @@ export function useFilters(props: UseFilterProps) {
     choices,
     refresh
   };
-}
-
-// Provide list of project code filters
-export function useProjectCodeFilters() {
-  return useFilters({
-    url: apiUrl(ApiEndpoints.project_code_list),
-    transform: (item) => ({
-      value: item.pk,
-      label: item.code
-    })
-  });
-}
-
-// Provide list of user filters
-export function useUserFilters() {
-  return useFilters({
-    url: apiUrl(ApiEndpoints.user_list),
-    params: {
-      is_active: true
-    },
-    transform: (item) => ({
-      value: item.pk,
-      label: item.username
-    })
-  });
-}
-
-// Provide list of owner filters
-export function useOwnerFilters() {
-  return useFilters({
-    url: apiUrl(ApiEndpoints.owner_list),
-    params: {
-      is_active: true
-    },
-    transform: (item) => ({
-      value: item.pk,
-      label: item.name
-    })
-  });
 }

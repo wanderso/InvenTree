@@ -4,7 +4,7 @@ title: InvenTree Configuration
 
 ## InvenTree Configuration
 
-While many InvenTree options can be configured at "run time", there are a number of system configuration parameters which need to be set *before* running InvenTree. Admin users will need to adjust the InvenTree installation to meet the particular needs of their setup. For example, pointing to the correct database backend, or specifying a list of allowed hosts.
+While many InvenTree options can be configured at "run time" (see [System Settings](../settings/admin.md#system-settings)), there are a number of system configuration parameters which need to be set *before* running InvenTree. Admin users will need to adjust the InvenTree installation to meet the particular needs of their setup. For example, pointing to the correct database backend, or specifying a list of allowed hosts.
 
 InvenTree system settings can be specified either via environment variables, or in a configuration file.
 
@@ -75,7 +75,7 @@ The site URL is the URL that users will use to access the InvenTree server. For 
 
 ### Timezone
 
-By default, the InvenTree server is configured to use the UTC timezone. This can be adjusted to your desired local timezone. You can refer to [Wikipedia](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) for a list of available timezones. Use the values specified in the *TZ Identifier* column in the linked page.
+By default, the InvenTree server is configured to use the UTC timezone. This can be adjusted to your desired local timezone. You can refer to [Wikipedia](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) for a list of available timezones. Use the values specified in the *TZ Identifier* column in the linked page. For example, to change to the United States Pacific timezone, set `INVENTREE_TIMEZONE='America/Los_Angeles'`.
 
 Date and time values are stored in the database in UTC format, and are converted to the selected timezone for display in the user interface or API.
 
@@ -83,7 +83,7 @@ Date and time values are stored in the database in UTC format, and are converted
 
 By default, the InvenTree server will not automatically apply database migrations. When the InvenTree installation is updated (*or a plugin is installed which requires database migrations*), database migrations must be applied manually by the system administrator.
 
-With "auto update" enabled, the InvenTree server will automatically apply database migrations as required. To enable automatic database updates, set `INVENTREE_AUTO_UPDATE` to `True`.
+With "auto update" enabled, the InvenTree server will automatically apply database migrations as required when plugins are changed. To enable automatic database updates, set `INVENTREE_AUTO_UPDATE` to `True`. However, this setting is not sufficient when updating your InvenTree installation - you must still ensure that you follow the required steps for updating InvenTree as per your installation method.
 
 ## Debugging and Logging Options
 
@@ -91,16 +91,17 @@ The following debugging / logging options are available:
 
 | Environment Variable | Configuration File | Description | Default |
 | --- | --- | --- | --- |
-| INVENTREE_DEBUG | debug | Enable [debug mode](./intro.md#debug-mode) | False |
+| INVENTREE_DEBUG | debug | Enable [debug mode](./index.md#debug-mode) | False |
 | INVENTREE_DEBUG_QUERYCOUNT | debug_querycount | Enable [query count logging](https://github.com/bradmontgomery/django-querycount) in the terminal | False |
 | INVENTREE_DB_LOGGING | db_logging | Enable logging of database messages | False |
 | INVENTREE_LOG_LEVEL | log_level | Set level of logging to terminal | WARNING |
 | INVENTREE_JSON_LOG | json_log | log as json | False |
 | INVENTREE_WRITE_LOG | write_log | Enable writing of log messages to file at config base | False |
+| INVENTREE_CONSOLE_LOG | console_log | Enable logging to console | True |
 
 ### Debug Mode
 
-Enabling the `INVENTREE_DEBUG` setting will turn on [Django debug mode]({% include "django.html" %}/ref/settings/#debug). This mode is intended for development purposes, and should not be enabled in a production environment. Read more about [InvenTree debug mode](./intro.md#debug-mode).
+Enabling the `INVENTREE_DEBUG` setting will turn on [Django debug mode]({% include "django.html" %}/ref/settings/#debug). This mode is intended for development purposes, and should not be enabled in a production environment. Read more about [InvenTree debug mode](./index.md#debug-mode).
 
 ### Query Count Logging
 
@@ -134,6 +135,7 @@ Depending on how your InvenTree installation is configured, you will need to pay
 | INVENTREE_CORS_ORIGIN_WHITELIST | cors.whitelist | List of whitelisted CORS URLs. Refer to the [django-cors-headers documentation](https://github.com/adamchainz/django-cors-headers#cors_allowed_origins-sequencestr) | Uses the *INVENTREE_SITE_URL* parameter, if set. Otherwise, an empty list. |
 | INVENTREE_CORS_ORIGIN_REGEX | cors.regex | List of regular expressions for CORS whitelisted URL patterns | *Empty list* |
 | INVENTREE_CORS_ALLOW_CREDENTIALS | cors.allow_credentials | Allow cookies in cross-site requests | `True` |
+| INVENTREE_SITE_LAX_PROTOCOL | site_lax_protocol | Ignore protocol mismatches on INVE-E7 site checks | `True` |
 | INVENTREE_USE_X_FORWARDED_HOST | use_x_forwarded_host | Use forwarded host header | `False` |
 | INVENTREE_USE_X_FORWARDED_PORT | use_x_forwarded_port | Use forwarded port header | `False` |
 | INVENTREE_USE_X_FORWARDED_PROTO | use_x_forwarded_proto | Use forwarded protocol header | `False` |
@@ -142,7 +144,7 @@ Depending on how your InvenTree installation is configured, you will need to pay
 
 ### Debug Mode
 
-Note that in [debug mode](./intro.md#debug-mode), some of the above settings are automatically adjusted to allow for easier development. The following settings are internally overridden in debug mode with the values specified below:
+Note that in [debug mode](./index.md#debug-mode), some of the above settings are automatically adjusted to allow for easier development. The following settings are internally overridden in debug mode with the values specified below:
 
 | Setting | Value in Debug Mode | Description |
 | --- | --- | --- |
@@ -217,31 +219,35 @@ You can either specify the password directly using `INVENTREE_ADMIN_PASSWORD`, o
 !!! info "Administrator Account"
     Providing `INVENTREE_ADMIN` credentials will result in the provided account being created with *superuser* permissions when InvenTree is started.
 
-## Secret Key
+## Secret Key Material
 
-InvenTree requires a secret key for providing cryptographic signing - this should be a secret (and unpredictable) value.
+InvenTree requires secret keys for providing cryptographic signing and oidc private keys- this should be a secret (and unpredictable) value.
 
-!!! info "Auto-Generated Key"
-    If none of the following options are specified, InvenTree will automatically generate a secret key file (stored in `secret_key.txt`) on first run.
+!!! info "Auto-Generated material"
+    If none of the following options are specified, InvenTree will automatically generate a secret key file (stored in `secret_key.txt`) and a oidc key file (stored in `oidc.pem`) on first run.
 
-The secret key can be provided in multiple ways, with the following (descending) priorities:
+The secret key material can be provided in multiple ways, with the following (descending) priorities:
 
-**Pass Secret Key via Environment Variable**
+**Pass Secret Key Material via Environment Variable**
 
 A secret key string can be passed directly using the environment variable `INVENTREE_SECRET_KEY`
+A oidc private key can be passed directly using the environment variable `INVENTREE_OIDC_PRIVATE_KEY`
 
-**Pass Secret Key File via Environment Variable**
+**Pass Secret Key Material File via Environment Variable**
 
 A file containing the secret key can be passed via the environment variable `INVENTREE_SECRET_KEY_FILE`
+A PEM-encoded file containing the oidc private key can be passed via the environment variable `INVENTREE_OIDC_PRIVATE_KEY_FILE`
 
-**Fallback to Default Secret Key File**
+**Fallback to Default Secret Key Material**
 
-If not specified via environment variables, the fallback secret_key file (automatically generated as part of InvenTree installation) will be used.
+If not specified via environment variables, the fallback files (automatically generated as part of InvenTree installation) will be used.
 
 | Environment Variable | Configuration File | Description | Default |
 | --- | --- | --- | --- |
 | INVENTREE_SECRET_KEY | secret_key | Raw secret key value | *Not specified* |
 | INVENTREE_SECRET_KEY_FILE | secret_key_file | File containing secret key value | *Not specified* |
+| INVENTREE_OIDC_PRIVATE_KEY | oidc_private_key | Raw private key value | *Not specified* |
+| INVENTREE_OIDC_PRIVATE_KEY_FILE | oidc_private_key_file | File containing private key value in PEM format | *Not specified* |
 
 ## Database Options
 
@@ -302,6 +308,8 @@ The following cache settings are available:
 | INVENTREE_CACHE_ENABLED | cache.enabled | Enable redis caching | False |
 | INVENTREE_CACHE_HOST | cache.host | Cache server host | *Not specified* |
 | INVENTREE_CACHE_PORT | cache.port | Cache server port | 6379 |
+| INVENTREE_CACHE_PASSWORD | cache.password | Cache server password | none |
+| INVENTREE_CACHE_USER | cache.user | Cache server username | none |
 | INVENTREE_CACHE_CONNECT_TIMEOUT | cache.connect_timeout | Cache connection timeout (seconds) | 3 |
 | INVENTREE_CACHE_TIMEOUT | cache.timeout | Cache timeout (seconds) | 3 |
 | INVENTREE_CACHE_TCP_KEEPALIVE | cache.tcp_keepalive | Cache TCP keepalive | True |
@@ -372,6 +380,44 @@ Database and media backups **require** a local directory for storage. This direc
 
 Alternatively this location can be specified with the `INVENTREE_BACKUP_DIR` environment variable.
 
+
+### Storage backends
+
+It is also possible to use alternative storage backends for static and media files, at the moment there is direct provide direct support bundled for S3 and SFTP. Google cloud storage and Azure blob storage would also be supported by the [used library](https://django-storages.readthedocs.io), but require additional packages to be installed.
+
+| Environment Variable | Configuration File | Description | Default |
+| --- | --- | --- | --- |
+| INVENTREE_STORAGE_TARGET | storage.target | Storage target to use for static and media files, valid options: local, s3, sftp | local |
+
+#### S3
+
+| Environment Variable | Configuration File | Description | Default |
+| --- | --- | --- | --- |
+| INVENTREE_S3_ACCESS_KEY | storage.s3.access_key | Access key | *Not specified* |
+| INVENTREE_S3_SECRET_KEY | storage.s3.secret_key | Secret key |
+| *Not specified* |
+| INVENTREE_S3_BUCKET_NAME | storage.s3.bucket_name | Bucket name, required by most providers |
+| *Not specified* |
+| INVENTREE_S3_REGION_NAME | storage.s3.region_name | S3 region name |
+| *Not specified* |
+| INVENTREE_S3_ENDPOINT_URL | storage.s3.endpoint_url | Custom S3 endpoint URL, defaults to AWS endpoints if not set |
+| *Not specified* |
+| INVENTREE_S3_LOCATION | storage.s3.location | Sub-Location that should be used | inventree-server |
+| INVENTREE_S3_DEFAULT_ACL | storage.s3.default_acl | Default ACL for uploaded files, defaults to provider default if not set | *Not specified* |
+| INVENTREE_S3_VERIFY_SSL | storage.s3.verify_ssl | Verify SSL certificate for S3 endpoint | True |
+| INVENTREE_S3_OVERWRITE | storage.s3.overwrite | Overwrite existing files in S3 bucket | False |
+| INVENTREE_S3_VIRTUAL | storage.s3.virtual | Use virtual addressing style - by default False -> `path` style, `virtual` style if True | False |
+
+#### SFTP
+
+| Environment Variable | Configuration File | Description | Default |
+| --- | --- | --- | --- |
+| INVENTREE_SFTP_HOST | storage.sftp.host | SFTP host | *Not specified* |
+| INVENTREE_SFTP_PARAMS | storage.sftp.params | SFTP connection parameters, see https://docs.paramiko.org/en/latest/api/client.html#paramiko.client.SSHClient.connect; e.g. `{'port': 22, 'user': 'usr', 'password': 'pwd'}` | *Not specified* |
+| INVENTREE_SFTP_UID | storage.sftp.uid | SFTP user ID - not required | *Not specified* |
+| INVENTREE_SFTP_GID | storage.sftp.gid | SFTP group ID - not required | *Not specified* |
+| INVENTREE_SFTP_LOCATION | storage.sftp.location | Sub-Location that should be used | inventree-server |
+
 ## Authentication
 
 InvenTree provides allowance for additional sign-in options. The following options are not enabled by default, and care must be taken by the system administrator when configuring these settings.
@@ -379,6 +425,7 @@ InvenTree provides allowance for additional sign-in options. The following optio
 | Environment Variable | Configuration File | Description | Default |
 | --- | --- | --- | --- |
 | INVENTREE_MFA_ENABLED | mfa_enabled | Enable or disable multi-factor authentication support for the InvenTree server | True |
+| INVENTREE_MFA_SUPPORTED_TYPES | mfa_supported_types | List of supported multi-factor authentication types | recovery_codes,totp,webauthn |
 
 ### Single Sign On
 
@@ -406,7 +453,7 @@ The login-experience can be altered with the following settings:
 
 Custom authentication backends can be used by specifying them here. These can for example be used to add [LDAP / AD login](https://django-auth-ldap.readthedocs.io/en/latest/) to InvenTree
 
-### Sentry Integration
+## Sentry Integration
 
 The InvenTree server can be integrated with the [sentry.io](https://sentry.io) monitoring service, for error logging and performance tracking.
 
@@ -419,7 +466,7 @@ The InvenTree server can be integrated with the [sentry.io](https://sentry.io) m
 !!! info "Default DSN"
     If enabled with the default DSN, server errors will be logged to a sentry.io account monitored by the InvenTree developers.
 
-### Customization Options
+## Customization Options
 
 The logo and custom messages can be changed/set:
 
@@ -427,6 +474,7 @@ The logo and custom messages can be changed/set:
 | --- | --- | --- | --- |
 | INVENTREE_CUSTOM_LOGO | customize.logo | Path to custom logo in the static files directory | *Not specified* |
 | INVENTREE_CUSTOM_SPLASH | customize.splash | Path to custom splash screen in the static files directory | *Not specified* |
+| INVENTREE_CUSTOMIZE | customize.site_header | Custom site header in the Django admin | InvenTree Admin |
 | INVENTREE_CUSTOMIZE | customize.login_message | Custom message for login page | *Not specified* |
 | INVENTREE_CUSTOMIZE | customize.navbar_message | Custom message for navbar | *Not specified* |
 
@@ -447,9 +495,31 @@ If you want to remove the InvenTree branding as far as possible from your end-us
 !!! info "Custom Logo Path"
     The provided *custom logo* path must be specified *relative* to the location of the `/static/` directory.
 
+## Frontend Options
+
+Set the `INVENTREE_FRONTEND_SETTINGS` Environment variable to a JSON object or use `frontend_settings` in the configuration file with the following options:
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `base_url` | Set the base URL for the user interface. This is the UI path e.g. '/web/' | `web` |
+| `api_host` | If provided, specify the API host | *None* |
+| `server_list` | Set the server list. `{}` | `[]` |
+| `debug` | Set the debug mode | *Server debug mode* |
+| `environment` | `development` or `production` | *development if Server is in debug mode* |
+| `show_server_selector` | In debug mode, show server selector by default. If no servers are specified, show server selector. | |
+| `url_compatibility` | Support compatibility with "legacy" URLs? | `true` |
+| `sentry_dsn` | Set a Sentry DSN url | *Not specified* |
+| `mobile_mode` | Controls if InvenTree web UI can be used by mobile devices. There are 3 options: `default` - does not allow mobile devices; `allow-ignore` - shows a mobile device detected banner with a button to ignore this warning AT THE USERS OWN RISK; `allow-always` - skips the mobile check and allows mobile devices always (of course at the server admins OWN RISK) | `default` |
+
+E.g. to allow mobile devices to ignore the mobile check, use the following Environment variable:
+
+```env
+INVENTREE_FRONTEND_SETTINGS='{"mobile_mode": "allow-ignore"}'
+```
+
 ## Plugin Options
 
-The following [plugin](../extend/plugins.md) configuration options are available:
+The following [plugin](../plugins/index.md) configuration options are available:
 
 | Environment Variable | Configuration File | Description | Default |
 | --- | --- | --- | --- |
@@ -457,3 +527,16 @@ The following [plugin](../extend/plugins.md) configuration options are available
 | INVENTREE_PLUGIN_NOINSTALL | plugin_noinstall | Disable Plugin installation via API - only use plugins.txt file | False |
 | INVENTREE_PLUGIN_FILE | plugins_plugin_file | Location of plugin installation file | *Not specified* |
 | INVENTREE_PLUGIN_DIR | plugins_plugin_dir | Location of external plugin directory | *Not specified* |
+| INVENTREE_PLUGINS_MANDATORY | plugins_mandatory | List of [plugins which are considered mandatory](../plugins/index.md#mandatory-third-party-plugins) | *Not specified* |
+| INVENTREE_PLUGIN_DEV_SLUG | plugin_dev.slug | Specify plugin to run in [development mode](../plugins/creator.md#backend-configuration) | *Not specified* |
+| INVENTREE_PLUGIN_DEV_HOST | plugin_dev.host | Specify host for development mode plugin | http://localhost:5174 |
+
+## Override Global Settings
+
+If required, [global settings values](../settings/global.md#override-global-settings) can be overridden by the system administrator.
+
+To override global settings, provide a "dictionary" of settings overrides in the configuration file, or via an environment variable.
+
+| Environment Variable | Configuration File | Description | Default |
+| --- | --- | --- | --- |
+| GLOBAL_SETTINGS_OVERRIDES | global_settings_overrides | JSON object containing global settings overrides | *Not specified* |

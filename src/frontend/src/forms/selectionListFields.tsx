@@ -1,13 +1,9 @@
-import { t } from '@lingui/macro';
+import type { ApiFormFieldSet, ApiFormFieldType } from '@lib/types/Forms';
+import { t } from '@lingui/core/macro';
 import { Table } from '@mantine/core';
 import { useMemo } from 'react';
-
 import RemoveRowButton from '../components/buttons/RemoveRowButton';
 import { StandaloneField } from '../components/forms/StandaloneField';
-import type {
-  ApiFormFieldSet,
-  ApiFormFieldType
-} from '../components/forms/fields/ApiFormField';
 import type { TableFieldRowProps } from '../components/forms/fields/TableField';
 
 function BuildAllocateLineRow({
@@ -64,7 +60,7 @@ function BuildAllocateLineRow({
   }, [props]);
 
   return (
-    <Table.Tr key={`table-row-${props.item.pk}`}>
+    <Table.Tr key={`table-row-${props.item.id ?? props.idx}`}>
       <Table.Td>
         <StandaloneField fieldName='value' fieldDefinition={valueField} />
       </Table.Td>
@@ -100,7 +96,12 @@ export function selectionListFields(): ApiFormFieldSet {
       description: t`List of entries to choose from`,
       field_type: 'table',
       value: [],
-      headers: [t`Value`, t`Label`, t`Description`, t`Active`],
+      headers: [
+        { title: t`Value` },
+        { title: t`Label` },
+        { title: t`Description` },
+        { title: t`Active` }
+      ],
       modelRenderer: (row: TableFieldRowProps) => (
         <BuildAllocateLineRow props={row} />
       ),

@@ -1,12 +1,13 @@
 import { IconUsers } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 
-import type { ApiFormFieldSet } from '../components/forms/fields/ApiFormField';
+import type { ApiFormFieldSet } from '@lib/types/Forms';
+import { t } from '@lingui/core/macro';
 import type {
   StatusCodeInterface,
   StatusCodeListInterface
 } from '../components/render/StatusRenderer';
-import { useGlobalStatusState } from '../states/StatusState';
+import { useGlobalStatusState } from '../states/GlobalStatusState';
 
 export function projectCodeFields(): ApiFormFieldSet {
   return {
@@ -83,6 +84,9 @@ export function extraLineItemFields(): ApiFormFieldSet {
     quantity: {},
     price: {},
     price_currency: {},
+    project_code: {
+      description: t`Select project code for this line item`
+    },
     notes: {},
     link: {}
   };

@@ -10,10 +10,11 @@ import json
 import os
 import uuid
 from datetime import timedelta, timezone
+from email.utils import make_msgid
 from enum import Enum
 from io import BytesIO
 from secrets import compare_digest
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from django.apps import apps
 from django.conf import settings as django_settings
@@ -23,38 +24,65 @@ from django.contrib.contenttypes.models import ContentType
 from django.contrib.humanize.templatetags.humanize import naturaltime
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.core.mail import EmailMultiAlternatives, get_connection
+from django.core.mail.utils import DNS_NAME
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
+from django.db.models import enums
 from django.db.models.signals import post_delete, post_save
 from django.db.utils import IntegrityError, OperationalError, ProgrammingError
-from django.dispatch.dispatcher import receiver
+from django.dispatch import receiver
 from django.urls import reverse
 from django.utils.timezone import now
 from django.utils.translation import gettext_lazy as _
 
 import structlog
+from anymail.signals import inbound, tracking
+from django_q.signals import post_spawn
 from djmoney.contrib.exchange.exceptions import MissingRate
 from djmoney.contrib.exchange.models import convert_money
+from opentelemetry import trace
 from rest_framework.exceptions import PermissionDenied
 from taggit.managers import TaggableManager
 
-import common.currency
 import common.validators
-import InvenTree.exceptions
 import InvenTree.fields
 import InvenTree.helpers
 import InvenTree.models
 import InvenTree.ready
 import InvenTree.tasks
-import InvenTree.validators
 import users.models
 from common.setting.type import InvenTreeSettingsKeyType, SettingsKeyType
+from common.settings import get_global_setting, global_setting_overrides
+from generic.enums import StringEnum
 from generic.states import ColorEnum
 from generic.states.custom import state_color_mappings
+from InvenTree.cache import get_session_cache, set_session_cache
 from InvenTree.sanitizer import sanitize_svg
+from InvenTree.tracing import TRACE_PROC, TRACE_PROV
+from InvenTree.version import inventree_identifier
 
 logger = structlog.get_logger('inventree')
+
+
+class RenderMeta(enums.ChoicesMeta):
+    """Metaclass for rendering choices."""
+
+    choice_fnc = None
+
+    @property
+    def choices(self):
+        """Return a list of choices for the enum class."""
+        fnc = getattr(self, 'choice_fnc', None)
+        if fnc:
+            return fnc()
+        return []
+
+
+class RenderChoices(models.TextChoices, metaclass=RenderMeta):  # type: ignore
+    """Class for creating enumerated string choices for schema rendering."""
 
 
 class MetaMixin(models.Model):
@@ -74,6 +102,42 @@ class MetaMixin(models.Model):
         help_text=_('Timestamp of last update'),
         auto_now=True,
         null=True,
+    )
+
+
+class UpdatedUserMixin(models.Model):
+    """A mixin which stores additional information about the user who created or last modified the object."""
+
+    class Meta:
+        """Meta options for MetaUserMixin."""
+
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        """Extract the user object from kwargs, if provided."""
+        if updated_by := kwargs.pop('updated_by', None):
+            self.updated_by = updated_by
+
+        self.updated = InvenTree.helpers.current_time()
+
+        super().save(*args, **kwargs)
+
+    updated = models.DateTimeField(
+        verbose_name=_('Updated'),
+        help_text=_('Timestamp of last update'),
+        default=None,
+        blank=True,
+        null=True,
+    )
+
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='%(class)s_updated',
+        verbose_name=_('Update By'),
+        help_text=_('User who last updated this object'),
     )
 
 
@@ -156,6 +220,9 @@ class BaseInvenTreeSetting(models.Model):
         if do_cache:
             self.save_to_cache()
 
+        # Remove the setting from the request cache
+        set_session_cache(self.cache_key, None)
+
         # Execute after_save action
         self._call_settings_function('after_save', args, kwargs)
 
@@ -165,15 +232,6 @@ class BaseInvenTreeSetting(models.Model):
 
         If a particular setting is not present, create it with the default value
         """
-        cache_key = f'BUILD_DEFAULT_VALUES:{cls.__name__!s}'
-
-        try:
-            if InvenTree.helpers.str2bool(cache.get(cache_key, False)):
-                # Already built default values
-                return
-        except Exception:
-            pass
-
         try:
             existing_keys = cls.objects.filter(**kwargs).values_list('key', flat=True)
             settings_keys = cls.SETTINGS.keys()
@@ -193,11 +251,6 @@ class BaseInvenTreeSetting(models.Model):
             logger.exception(
                 'Failed to build default values for %s (%s)', str(cls), str(type(exc))
             )
-
-        try:
-            cache.set(cache_key, True, timeout=3600)
-        except Exception:
-            pass
 
     def _call_settings_function(self, reference: str, args, kwargs):
         """Call a function associated with a particular setting.
@@ -236,7 +289,7 @@ class BaseInvenTreeSetting(models.Model):
 
         try:
             cache.set(key, self, timeout=3600)
-        except Exception:
+        except Exception:  # pragma: no cover
             pass
 
     @classmethod
@@ -485,22 +538,20 @@ class BaseInvenTreeSetting(models.Model):
         - Key is case-insensitive
         - Returns None if no match is made
 
-        First checks the cache to see if this object has recently been accessed,
-        and returns the cached version if so.
+        As settings are accessed frequently, this function will attempt to access the cache first:
+
+        1. Check the ephemeral request cache
+        2. Check the global cache
+        3. Query the database
         """
         key = str(key).strip().upper()
 
         # Unless otherwise specified, attempt to create the setting
         create = kwargs.pop('create', True)
 
-        # Specify if cache lookup should be performed
-        do_cache = kwargs.pop('cache', django_settings.GLOBAL_CACHE_ENABLED)
-
-        filters = {
-            'key__iexact': key,
-            # Optionally filter by other keys
-            **cls.get_filters(**kwargs),
-        }
+        # Specify if global cache lookup should be performed
+        # If not specified, determine based on whether global cache is enabled
+        access_global_cache = kwargs.pop('cache', django_settings.GLOBAL_CACHE_ENABLED)
 
         # Prevent saving to the database during certain operations
         if (
@@ -508,23 +559,38 @@ class BaseInvenTreeSetting(models.Model):
             or InvenTree.ready.isRunningMigrations()
             or InvenTree.ready.isRebuildingData()
             or InvenTree.ready.isRunningBackup()
-        ):
+        ):  # pragma: no cover
             create = False
-            do_cache = False
+            access_global_cache = False
 
         cache_key = cls.create_cache_key(key, **kwargs)
 
-        if do_cache:
+        # Fist, attempt to pull the setting from the request cache
+        if setting := get_session_cache(cache_key):
+            return setting
+
+        if access_global_cache:
             try:
                 # First attempt to find the setting object in the cache
                 cached_setting = cache.get(cache_key)
 
                 if cached_setting is not None:
+                    # Store the cached setting into the session cache
+
+                    set_session_cache(cache_key, cached_setting)
                     return cached_setting
 
             except Exception:
                 # Cache is not ready yet
-                do_cache = False
+                access_global_cache = False
+
+        # At this point, we need to query the database
+
+        filters = {
+            'key__iexact': key,
+            # Optionally filter by other keys
+            **cls.get_filters(**kwargs),
+        }
 
         try:
             settings = cls.objects.all()
@@ -538,7 +604,15 @@ class BaseInvenTreeSetting(models.Model):
         if not setting and create:
             # Attempt to create a new settings object
             default_value = cls.get_setting_default(key, **kwargs)
-            setting = cls(key=key, value=default_value, **kwargs)
+
+            extra_fields = {}
+
+            # Provide extra default fields
+            for field in cls.extra_unique_fields:
+                if field in kwargs:
+                    extra_fields[field] = kwargs[field]
+
+            setting = cls(key=key, value=default_value, **extra_fields)
 
             try:
                 # Wrap this statement in "atomic", so it can be rolled back if it fails
@@ -551,9 +625,13 @@ class BaseInvenTreeSetting(models.Model):
                 # The setting failed validation - might be due to duplicate keys
                 pass
 
-        if setting and do_cache:
-            # Cache this setting object
-            setting.save_to_cache()
+        if setting:
+            # Cache this setting object to the request cache
+            set_session_cache(cache_key, setting)
+
+            if access_global_cache:
+                # Cache this setting object to the global cache
+                setting.save_to_cache()
 
         return setting
 
@@ -629,7 +707,7 @@ class BaseInvenTreeSetting(models.Model):
             or InvenTree.ready.isRunningMigrations()
             or InvenTree.ready.isRebuildingData()
             or InvenTree.ready.isRunningBackup()
-        ):
+        ):  # pragma: no cover
             return
 
         attempts = int(kwargs.get('attempts', 3))
@@ -654,7 +732,7 @@ class BaseInvenTreeSetting(models.Model):
                 logger.warning("Database is locked, cannot set setting '%s'", key)
             # Likely the DB is locked - not much we can do here
             return
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover
             logger.exception(
                 "Error setting setting '%s' for %s: %s", key, str(cls), str(type(exc))
             )
@@ -689,7 +767,7 @@ class BaseInvenTreeSetting(models.Model):
         except (OperationalError, ProgrammingError):
             logger.warning("Database is locked, cannot set setting '%s'", key)
             # Likely the DB is locked - not much we can do here
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover
             # Some other error
             logger.exception(
                 "Error setting setting '%s' for %s: %s", key, str(cls), str(type(exc))
@@ -737,13 +815,13 @@ class BaseInvenTreeSetting(models.Model):
 
         # Encode as native values
         if self.is_int():
-            self.value = self.as_int()
+            self.value = self.as_int(raise_error=True)
 
         elif self.is_bool():
             self.value = self.as_bool()
 
         elif self.is_float():
-            self.value = self.as_float()
+            self.value = self.as_float(raise_error=True)
 
         validator = self.__class__.get_setting_validator(
             self.key, **self.get_filters_for_instance()
@@ -886,13 +964,26 @@ class BaseInvenTreeSetting(models.Model):
         """Check if this setting references a model instance in the database."""
         return self.model_name() is not None
 
-    def model_name(self):
+    def model_name(self) -> str:
         """Return the model name associated with this setting."""
         setting = self.get_setting_definition(
             self.key, **self.get_filters_for_instance()
         )
 
         return setting.get('model', None)
+
+    def model_filters(self) -> Optional[dict]:
+        """Return the model filters associated with this setting."""
+        setting = self.get_setting_definition(
+            self.key, **self.get_filters_for_instance()
+        )
+
+        filters = setting.get('model_filters', None)
+
+        if filters is not None and type(filters) is not dict:
+            filters = None
+
+        return filters
 
     def model_class(self):
         """Return the model class associated with this setting.
@@ -1030,7 +1121,7 @@ class BaseInvenTreeSetting(models.Model):
 
         return False
 
-    def as_float(self):
+    def as_float(self, raise_error: bool = False) -> float:
         """Return the value of this setting converted to a float value.
 
         If an error occurs, return the default value
@@ -1038,6 +1129,8 @@ class BaseInvenTreeSetting(models.Model):
         try:
             value = float(self.value)
         except (ValueError, TypeError):
+            if raise_error:
+                raise ValidationError('Provided value is not a valid float')
             value = self.default_value
 
         return value
@@ -1063,7 +1156,7 @@ class BaseInvenTreeSetting(models.Model):
 
         return False
 
-    def as_int(self):
+    def as_int(self, raise_error: bool = False) -> int:
         """Return the value of this setting converted to a boolean value.
 
         If an error occurs, return the default value
@@ -1071,6 +1164,8 @@ class BaseInvenTreeSetting(models.Model):
         try:
             value = int(self.value)
         except (ValueError, TypeError):
+            if raise_error:
+                raise ValidationError('Provided value is not a valid integer')
             value = self.default_value
 
         return value
@@ -1122,10 +1217,41 @@ class InvenTreeSetting(BaseInvenTreeSetting):
 
         If so, set the "SERVER_RESTART_REQUIRED" setting to True
         """
+        overrides = global_setting_overrides()
+
+        # If an override is specified for this setting, use that value
+        if self.key in overrides:
+            self.value = overrides[self.key]
+
         super().save()
 
         if self.requires_restart() and not InvenTree.ready.isImportingData():
             InvenTreeSetting.set_setting('SERVER_RESTART_REQUIRED', True, None)
+
+    @classmethod
+    def get_setting_default(cls, key, **kwargs):
+        """Return the default value a particular setting."""
+        overrides = global_setting_overrides()
+
+        if key in overrides:
+            # If an override is specified for this setting, use that value
+            return overrides[key]
+
+        return super().get_setting_default(key, **kwargs)
+
+    @classmethod
+    def get_setting(cls, key, backup_value=None, **kwargs):
+        """Get the value of a particular setting.
+
+        If it does not exist, return the backup value (default = None)
+        """
+        overrides = global_setting_overrides()
+
+        if key in overrides:
+            # If an override is specified for this setting, use that value
+            return overrides[key]
+
+        return super().get_setting(key, backup_value=backup_value, **kwargs)
 
     """
     Dict of all global settings values:
@@ -1380,8 +1506,8 @@ class WebhookEndpoint(models.Model):
             request (optional): Original request object. Defaults to None.
         """
         return WebhookMessage.objects.create(
-            host=request.get_host(),
-            header=json.dumps(dict(headers.items())),
+            host=request.get_host() if request else '',
+            header=json.dumps(dict(headers.items())) if headers else None,
             body=payload,
             endpoint=self,
         )
@@ -1745,15 +1871,15 @@ def after_custom_unit_updated(sender, instance, **kwargs):
     reload_unit_registry()
 
 
-def rename_attachment(instance, filename):
+def rename_attachment(instance, filename: str):
     """Callback function to rename an uploaded attachment file.
 
-    Arguments:
-        - instance: The Attachment instance
-        - filename: The original filename of the uploaded file
+    Args:
+        instance (Attachment): The Attachment instance for which the file is being renamed.
+        filename (str): The original filename of the uploaded file.
 
     Returns:
-        - The new filename for the uploaded file, e.g. 'attachments/<model_type>/<model_id>/<filename>'
+        str: The new filename for the uploaded file, e.g. 'attachments/<model_type>/<model_id>/<filename>'.
     """
     # Remove any illegal characters from the filename
     illegal_chars = '\'"\\`~#|!@#$%^&*()[]{}<>?;:+=,'
@@ -1789,6 +1915,11 @@ class Attachment(InvenTree.models.MetadataMixin, InvenTree.models.InvenTreeModel
         """Metaclass options."""
 
         verbose_name = _('Attachment')
+
+    class ModelChoices(RenderChoices):
+        """Model choices for attachments."""
+
+        choice_fnc = common.validators.attachment_model_options
 
     def save(self, *args, **kwargs):
         """Custom 'save' method for the Attachment model.
@@ -1838,7 +1969,8 @@ class Attachment(InvenTree.models.MetadataMixin, InvenTree.models.InvenTreeModel
     model_type = models.CharField(
         max_length=100,
         validators=[common.validators.validate_attachment_model_type],
-        help_text=_('Target model type for this image'),
+        verbose_name=_('Model type'),
+        help_text=_('Target model type for image'),
     )
 
     model_id = models.PositiveIntegerField()
@@ -1856,6 +1988,7 @@ class Attachment(InvenTree.models.MetadataMixin, InvenTree.models.InvenTreeModel
         null=True,
         verbose_name=_('Link'),
         help_text=_('Link to external URL'),
+        max_length=2000,
     )
 
     comment = models.CharField(
@@ -2291,3 +2424,465 @@ class BarcodeScanResult(InvenTree.models.InvenTreeModel):
         help_text=_('Was the barcode scan successful?'),
         default=False,
     )
+
+
+class DataOutput(models.Model):
+    """Model for storing generated data output from various processes.
+
+    This model is intended for storing data files which are generated by various processes,
+    and need to be retained for future use (e.g. download by the user).
+
+    Attributes:
+        created: Date and time that the data output was created
+        user: User who created the data output (if applicable)
+        total: Total number of items / records in the data output
+        progress: Current progress of the data output generation process
+        complete: Has the data output generation process completed?
+        output_type: The type of data output generated (e.g. 'label', 'report', etc)
+        template_name: Name of the template used to generate the data output (if applicable)
+        plugin: Key for the plugin which generated the data output (if applicable)
+        output: File field for storing the generated file
+        errors: JSON field for storing any errors generated during the data output generation process
+    """
+
+    class DataOutputTypes(StringEnum):
+        """Enum for data output types."""
+
+        LABEL = 'label'
+        REPORT = 'report'
+        EXPORT = 'export'
+
+    created = models.DateField(auto_now_add=True, editable=False)
+
+    user = models.ForeignKey(
+        User, on_delete=models.SET_NULL, blank=True, null=True, related_name='+'
+    )
+
+    total = models.PositiveIntegerField(default=1)
+
+    progress = models.PositiveIntegerField(default=0)
+
+    complete = models.BooleanField(default=False)
+
+    output_type = models.CharField(max_length=100, blank=True, null=True)
+
+    template_name = models.CharField(max_length=100, blank=True, null=True)
+
+    plugin = models.CharField(max_length=100, blank=True, null=True)
+
+    output = models.FileField(upload_to='data_output', blank=True, null=True)
+
+    errors = models.JSONField(blank=True, null=True)
+
+    def mark_complete(self, progress: int = 100, output: Optional[ContentFile] = None):
+        """Mark the data output generation process as complete.
+
+        Arguments:
+            progress (int, optional): Progress percentage of the data output generation. Defaults to 100.
+            output (ContentFile, optional): The generated output file. Defaults to None.
+        """
+        self.complete = True
+        self.progress = progress
+        self.output = output
+        self.save()
+
+    def mark_failure(
+        self, error: Optional[str] = None, error_dict: Optional[dict] = None
+    ):
+        """Log an error message to the errors field.
+
+        Arguments:
+            error (str, optional): Error message to log. Defaults to None.
+            error_dict (dict): Dictionary containing error messages. Defaults to None.
+        """
+        self.complete = False
+        self.output = None
+
+        if error_dict is not None:
+            self.errors = error_dict
+        elif error is not None:
+            self.errors = {'error': str(error)}
+        else:
+            self.errors = {'error': str(_('An error occurred'))}
+
+        self.save()
+
+
+# region Email
+class Priority(models.IntegerChoices):
+    """Enumeration for defining email priority levels."""
+
+    NONE = 0
+    VERY_HIGH = 1
+    HIGH = 2
+    NORMAL = 3
+    LOW = 4
+    VERY_LOW = 5
+
+
+HEADER_PRIORITY = 'X-Priority'
+HEADER_MSG_ID = 'Message-ID'
+
+del_error_msg = _(
+    'INVE-E8: Email log deletion is protected. Set INVENTREE_PROTECT_EMAIL_LOG to False to allow deletion.'
+)
+
+
+class NoDeleteQuerySet(models.query.QuerySet):
+    """Custom QuerySet to prevent deletion of EmailLog entries."""
+
+    def delete(self):
+        """Override delete method to prevent deletion of EmailLog entries."""
+        if get_global_setting('INVENTREE_PROTECT_EMAIL_LOG'):
+            raise ValidationError(del_error_msg)
+        super().delete()
+
+
+class NoDeleteManager(models.Manager):
+    """Custom Manager to use NoDeleteQuerySet."""
+
+    def get_queryset(self):
+        """Return a NoDeleteQuerySet."""
+        return NoDeleteQuerySet(self.model, using=self._db)
+
+
+class EmailMessage(models.Model):
+    """Model for storing email messages sent or received by the system.
+
+    Attributes:
+        global_id: Unique identifier for the email message
+        message_id_key: Identifier for the email message - might be supplied by external system
+        thread_id_key: Identifier of thread - might be supplied by external system
+        subject: Subject of the email message
+        body: Body of the email message
+        to: Recipient of the email message
+        sender: Sender of the email message
+        status: Status of the email message (e.g. 'sent', 'failed', etc)
+        timestamp: Date and time that the email message left the system or was received by the system
+        headers: Headers of the email message
+        full_message: Full email message content
+        direction: Direction of the email message (e.g. 'inbound', 'outbound')
+        error_code: Error code (if applicable)
+        error_message: Error message (if applicable)
+        error_timestamp: Date and time of the error (if applicable)
+        delivery_options: Delivery options for the email message
+    """
+
+    class Meta:
+        """Meta options for EmailMessage."""
+
+        verbose_name = _('Email Message')
+        verbose_name_plural = _('Email Messages')
+
+    class EmailStatus(models.TextChoices):
+        """Machine setting config type enum."""
+
+        ANNOUNCED = (
+            'A',
+            _('Announced'),
+        )  # Intend to send mail was announced (saved in system, pushed to queue)
+        SENT = 'S', _('Sent')  # Mail was sent to the email server
+        FAILED = 'F', _('Failed')  # There was en error sending the email
+        DELIVERED = (
+            'D',
+            _('Delivered'),
+        )  # Mail was delivered to the recipient - this means we got some kind of feedback from the email server or user
+        READ = (
+            'R',
+            _('Read'),
+        )  # Mail was read by the recipient - this means we got some kind of feedback from the user
+        CONFIRMED = (
+            'C',
+            _('Confirmed'),
+        )  # Mail delivery was confirmed by the recipient explicitly
+
+    class EmailDirection(models.TextChoices):
+        """Email direction enum."""
+
+        INBOUND = 'I', _('Inbound')
+        OUTBOUND = 'O', _('Outbound')
+
+    class DeliveryOptions(models.TextChoices):
+        """Email delivery options enum."""
+
+        NO_REPLY = 'no_reply', _('No Reply')
+        TRACK_DELIVERY = 'track_delivery', _('Track Delivery')
+        TRACK_READ = 'track_read', _('Track Read')
+        TRACK_CLICK = 'track_click', _('Track Click')
+
+    global_id = models.UUIDField(
+        verbose_name=_('Global ID'),
+        help_text=_('Unique identifier for this message'),
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+    message_id_key = models.CharField(
+        max_length=250,
+        blank=True,
+        null=True,
+        verbose_name=_('Message ID'),
+        help_text=_(
+            'Identifier for this message (might be supplied by external system)'
+        ),
+    )
+    thread_id_key = models.CharField(
+        max_length=250,
+        blank=True,
+        null=True,
+        verbose_name=_('Thread ID'),
+        help_text=_(
+            'Identifier for this message thread (might be supplied by external system)'
+        ),
+    )
+    thread = models.ForeignKey(
+        'EmailThread',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='messages',
+        verbose_name=_('Thread'),
+        help_text=_('Linked thread for this message'),
+    )
+    subject = models.CharField(max_length=250, blank=False, null=False)
+    body = models.TextField(blank=False, null=False)
+    to = models.EmailField(blank=False, null=False)
+    sender = models.EmailField(blank=False, null=False)
+    status = models.CharField(
+        max_length=50, blank=True, null=True, choices=EmailStatus.choices
+    )
+    timestamp = models.DateTimeField(auto_now_add=True, editable=False)
+    headers = models.JSONField(blank=True, null=True)
+    # Additional info
+    full_message = models.TextField(blank=True, null=True)
+    direction = models.CharField(
+        max_length=50, blank=True, null=True, choices=EmailDirection.choices
+    )
+    priority = models.IntegerField(verbose_name=_('Prioriy'), choices=Priority.choices)
+    delivery_options = models.JSONField(
+        blank=True,
+        null=True,
+        # choices=DeliveryOptions.choices
+    )
+    # Optional tracking of delivery
+    error_code = models.CharField(max_length=50, blank=True, null=True)
+    error_message = models.TextField(blank=True, null=True)
+    error_timestamp = models.DateTimeField(blank=True, null=True)
+
+    def save(self, *args, **kwargs):
+        """Ensure threads exist before saving the email message."""
+        ret = super().save(*args, **kwargs)
+
+        # Ensure thread is linked
+        if not self.thread:
+            thread, created = EmailThread.objects.get_or_create(
+                key=self.thread_id_key, started_internal=True
+            )
+            self.thread = thread
+            if created and not self.thread_id_key:
+                self.thread_id_key = thread.global_id
+            self.save()
+
+        return ret
+
+    objects = NoDeleteManager()
+
+    def delete(self, *kwargs):
+        """Delete entry - if not protected."""
+        if get_global_setting('INVENTREE_PROTECT_EMAIL_LOG'):
+            raise ValidationError(del_error_msg)
+        return super().delete(*kwargs)
+
+
+class EmailThread(InvenTree.models.InvenTreeMetadataModel):
+    """Model for storing email threads."""
+
+    class Meta:
+        """Meta options for EmailThread."""
+
+        verbose_name = _('Email Thread')
+        verbose_name_plural = _('Email Threads')
+        unique_together = [['key', 'global_id']]
+        ordering = ['-updated']
+
+    key = models.CharField(
+        max_length=250,
+        verbose_name=_('Key'),
+        null=True,
+        blank=True,
+        help_text=_('Unique key for this thread (used to identify the thread)'),
+    )
+    global_id = models.UUIDField(
+        verbose_name=_('Global ID'),
+        help_text=_('Unique identifier for this thread'),
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    started_internal = models.BooleanField(
+        default=False,
+        verbose_name=_('Started Internal'),
+        help_text=_('Was this thread started internally?'),
+    )
+    created = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_('Created'),
+        help_text=_('Date and time that the thread was created'),
+    )
+    updated = models.DateTimeField(
+        auto_now=True,
+        verbose_name=_('Updated'),
+        help_text=_('Date and time that the thread was last updated'),
+    )
+
+
+def issue_mail(
+    subject: str,
+    body: str,
+    from_email: str,
+    recipients: Union[str, list],
+    fail_silently: bool = False,
+    html_message=None,
+    prio: Priority = Priority.NORMAL,
+    headers: Optional[dict] = None,
+):
+    """Send an email with the specified subject and body, to the specified recipients list.
+
+    Mostly used by tasks.
+    """
+    connection = get_connection(fail_silently=fail_silently)
+
+    message = EmailMultiAlternatives(
+        subject, body, from_email, recipients, connection=connection
+    )
+    if html_message:
+        message.attach_alternative(html_message, 'text/html')
+
+    # Add any extra headers
+    if headers is not None:
+        for key, value in headers.items():
+            message.extra_headers[key] = value
+
+    # Stabilize the message ID before creating the object
+    if HEADER_MSG_ID not in message.extra_headers:
+        message.extra_headers[HEADER_MSG_ID] = make_msgid(domain=DNS_NAME)
+
+    # TODO add `References` field for the thread ID
+
+    # Add headers for flags
+    message.extra_headers[HEADER_PRIORITY] = str(prio)
+
+    # And now send
+    return message.send()
+
+
+def log_email_messages(email_messages) -> list[EmailMessage]:
+    """Log email messages to the database.
+
+    Args:
+        email_messages (list): List of email messages to log.
+    """
+    instance_id = inventree_identifier(True)
+
+    msg_ids = []
+    for msg in email_messages:
+        try:
+            new_obj = EmailMessage.objects.create(
+                message_id_key=msg.extra_headers.get(HEADER_MSG_ID),
+                subject=msg.subject,
+                body=msg.body,
+                to=msg.to,
+                sender=msg.from_email,
+                status=EmailMessage.EmailStatus.ANNOUNCED,
+                direction=EmailMessage.EmailDirection.OUTBOUND,
+                priority=msg.extra_headers.get(HEADER_PRIORITY, '3'),
+                headers=msg.extra_headers,
+                full_message=msg,
+            )
+            msg_ids.append(new_obj)
+
+            # Add InvenTree specific headers to the message to help with identification if we see mails again
+            msg.extra_headers['X-InvenTree-MsgId-1'] = str(new_obj.global_id)
+            msg.extra_headers['X-InvenTree-ThreadId-1'] = str(new_obj.thread.global_id)
+            msg.extra_headers['X-InvenTree-Instance-1'] = str(instance_id)
+        except Exception as exc:  # pragma: no cover
+            logger.error(f' INVE-W10: Failed to log email message: {exc}')
+    return msg_ids
+
+
+@receiver(inbound)
+def handle_inbound(sender, event, esp_name, **kwargs):
+    """Handle inbound email messages from anymail."""
+    message = event.message
+
+    r_to = message.envelope_recipient or [a.addr_spec for a in message.to]
+    r_sender = message.envelope_sender or message.from_email.addr_spec
+
+    msg = EmailMessage.objects.create(
+        message_id_key=event.message[HEADER_MSG_ID],
+        subject=message.subject,
+        body=message.text,
+        to=r_to,
+        sender=r_sender,
+        status=EmailMessage.EmailStatus.READ,
+        direction=EmailMessage.EmailDirection.INBOUND,
+        priority=Priority.NONE,
+        timestamp=message.date,
+        headers=message._headers,
+        full_message=message.html,
+    )
+
+    # Schedule a task to process the email message
+    from plugin.base.mail.mail import process_mail_in
+
+    InvenTree.tasks.offload_task(process_mail_in, mail_id=msg.pk, group='mail')
+
+
+@receiver(tracking)
+def handle_event(sender, event, esp_name, **kwargs):
+    """Handle tracking events from anymail."""
+    try:
+        email = EmailMessage.objects.get(message_id_key=event.message_id)
+
+        if event.event_type == 'delivered':
+            email.status = EmailMessage.EmailStatus.DELIVERED
+        elif event.event_type == 'opened':
+            email.status = EmailMessage.EmailStatus.READ
+        elif event.event_type == 'clicked':
+            email.status = EmailMessage.EmailStatus.CONFIRMED
+        elif event.event_type == 'sent':
+            email.status = EmailMessage.EmailStatus.SENT
+        elif event.event_type == 'unknown':
+            email.error_message = event.esp_event
+        else:
+            if event.event_type in ('queued', 'deferred'):
+                # We ignore these
+                return True
+            else:
+                email.status = EmailMessage.EmailStatus.FAILED
+                email.error_code = event.event_type
+                email.error_message = event.esp_event
+                email.error_timestamp = event.timestamp
+        email.save()
+        return True
+    except EmailMessage.DoesNotExist:
+        return False
+    except Exception as exc:  # pragma: no cover
+        logger.error(f' INVE-W10: Failed to handle tracking event: {exc}')
+        return False
+
+
+# endregion Email
+
+# region tracing for django q
+if TRACE_PROC:  # pragma: no cover
+
+    @receiver(post_spawn)
+    def spwan_callback(sender, proc_name, **kwargs):
+        """Callback to patch in tracing support."""
+        TRACE_PROV.add_span_processor(TRACE_PROC)
+        trace.set_tracer_provider(TRACE_PROV)
+        trace.get_tracer(__name__)
+
+# endregion

@@ -1,4 +1,4 @@
-import type { MantineSize } from '@mantine/core';
+import type { MantineRadius } from '@mantine/core';
 
 export const emptyServerAPI = {
   server: null,
@@ -19,12 +19,14 @@ export const emptyServerAPI = {
   installer: null,
   target: null,
   default_locale: null,
-  django_admin: null
+  django_admin: null,
+  settings: null,
+  customize: null
 };
 
 export interface SiteMarkProps {
   value: number;
-  label: MantineSize;
+  label: MantineRadius;
 }
 
 export const SizeMarks: SiteMarkProps[] = [

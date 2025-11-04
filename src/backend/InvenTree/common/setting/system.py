@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import uuid
 
 from django.conf import settings as django_settings
 from django.contrib.auth.models import Group
@@ -29,8 +30,8 @@ def validate_part_name_format(value):
     # Make sure that the field_name exists in Part model
     from part.models import Part
 
-    jinja_template_regex = re.compile('{{.*?}}')
-    field_name_regex = re.compile('(?<=part\\.)[A-z]+')
+    jinja_template_regex = re.compile(r'{{.*?}}')
+    field_name_regex = re.compile(r'(?<=part\.)[A-z]+')
 
     for jinja_template in jinja_template_regex.findall(str(value)):
         # make sure at least one and only one field is present inside the parser
@@ -109,15 +110,20 @@ def reload_plugin_registry(setting):
 def barcode_plugins() -> list:
     """Return a list of plugin choices which can be used for barcode generation."""
     try:
-        from plugin import registry
+        from plugin import PluginMixinEnum, registry
 
-        plugins = registry.with_mixin('barcode', active=True)
+        plugins = registry.with_mixin(PluginMixinEnum.BARCODE, active=True)
     except Exception:  # pragma: no cover
         plugins = []
 
     return [
         (plug.slug, plug.human_name) for plug in plugins if plug.has_barcode_generation
     ]
+
+
+def default_uuid4() -> str:
+    """Return a default UUID4 value."""
+    return str(uuid.uuid4())
 
 
 class BaseURLValidator(URLValidator):
@@ -156,6 +162,12 @@ class BaseURLValidator(URLValidator):
             super().__call__(value)
 
 
+class SystemSetId:
+    """Shared system settings identifiers."""
+
+    GLOBAL_WARNING = '_GLOBAL_WARNING'
+
+
 SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
     'SERVER_RESTART_REQUIRED': {
         'name': _('Restart required'),
@@ -169,6 +181,27 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'description': _('Number of pending database migrations'),
         'default': 0,
         'validator': int,
+    },
+    SystemSetId.GLOBAL_WARNING: {
+        'name': _('Active warning codes'),
+        'description': _('A dict of active warning codes'),
+        'validator': json.loads,
+        'default': '{}',
+        'hidden': True,
+    },
+    'INVENTREE_INSTANCE_ID': {
+        'name': _('Instance ID'),
+        'description': _('Unique identifier for this InvenTree instance'),
+        'default': default_uuid4,
+        'hidden': True,
+    },
+    'INVENTREE_ANNOUNCE_ID': {
+        'name': _('Announce ID'),
+        'description': _(
+            'Announce the instance ID of the server in the server status info (unauthenticated)'
+        ),
+        'default': False,
+        'validator': bool,
     },
     'INVENTREE_INSTANCE': {
         'name': _('Server Instance Name'),
@@ -297,6 +330,21 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': 30,
         'units': _('days'),
         'validator': [int, MinValueValidator(7)],
+    },
+    'INVENTREE_DELETE_EMAIL_DAYS': {
+        'name': _('Email Deletion Interval'),
+        'description': _(
+            'Email messages will be deleted after specified number of days'
+        ),
+        'default': 30,
+        'units': _('days'),
+        'validator': [int, MinValueValidator(7)],
+    },
+    'INVENTREE_PROTECT_EMAIL_LOG': {
+        'name': _('Protect Email Log'),
+        'description': _('Prevent deletion of email log entries'),
+        'default': False,
+        'validator': bool,
     },
     'BARCODE_ENABLE': {
         'name': _('Barcode Support'),
@@ -441,12 +489,6 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': False,
         'validator': bool,
     },
-    'PART_SHOW_IMPORT': {
-        'name': _('Show Import in Views'),
-        'description': _('Display the import wizard in some part views'),
-        'default': False,
-        'validator': bool,
-    },
     'PART_SHOW_RELATED': {
         'name': _('Show related parts'),
         'description': _('Display related parts for a part'),
@@ -561,12 +603,20 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': False,
         'validator': bool,
     },
+    'PRICING_AUTO_UPDATE': {
+        'name': _('Auto Update Pricing'),
+        'description': _(
+            'Automatically update part pricing when internal data changes'
+        ),
+        'default': True,
+        'validator': bool,
+    },
     'PRICING_UPDATE_DAYS': {
         'name': _('Pricing Rebuild Interval'),
         'description': _('Number of days before part pricing is automatically updated'),
         'units': _('days'),
         'default': 30,
-        'validator': [int, MinValueValidator(10)],
+        'validator': [int, MinValueValidator(0)],
     },
     'PART_INTERNAL_PRICE': {
         'name': _('Internal Prices'),
@@ -623,12 +673,6 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
     'SERIAL_NUMBER_GLOBALLY_UNIQUE': {
         'name': _('Globally Unique Serials'),
         'description': _('Serial numbers for stock items must be globally unique'),
-        'default': False,
-        'validator': bool,
-    },
-    'SERIAL_NUMBER_AUTOFILL': {
-        'name': _('Autofill Serial Numbers'),
-        'description': _('Autofill serial numbers in forms'),
         'default': False,
         'validator': bool,
     },
@@ -742,6 +786,12 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': False,
         'validator': bool,
     },
+    'BUILDORDER_EXTERNAL_BUILDS': {
+        'name': _('External Build Orders'),
+        'description': _('Enable external build order functionality'),
+        'default': False,
+        'validator': bool,
+    },
     'PREVENT_BUILD_COMPLETION_HAVING_INCOMPLETED_TESTS': {
         'name': _('Block Until Tests Pass'),
         'description': _(
@@ -804,6 +854,14 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': False,
         'validator': bool,
     },
+    'SALESORDER_SHIPMENT_REQUIRES_CHECK': {
+        'name': _('Shipment Requires Checking'),
+        'description': _(
+            'Prevent completion of shipments until items have been checked'
+        ),
+        'default': False,
+        'validator': bool,
+    },
     'SALESORDER_SHIP_COMPLETE': {
         'name': _('Mark Shipped Orders as Complete'),
         'description': _(
@@ -831,6 +889,12 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'description': _(
             'Allow editing of purchase orders after they have been shipped or completed'
         ),
+        'default': False,
+        'validator': bool,
+    },
+    'PURCHASEORDER_CONVERT_CURRENCY': {
+        'name': _('Convert Currency'),
+        'description': _('Convert item value to base currency when receiving stock'),
         'default': False,
         'validator': bool,
     },
@@ -1003,10 +1067,23 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'validator': bool,
         'after_save': reload_plugin_registry,
     },
+    'ENABLE_PLUGINS_MAILS': {
+        'name': _('Enable mail integration'),
+        'description': _('Enable plugins to process outgoing/incoming mails'),
+        'default': False,
+        'validator': bool,
+        'after_save': reload_plugin_registry,
+    },
+    'PROJECT_CODES_ENABLED': {
+        'name': _('Enable project codes'),
+        'description': _('Enable project codes for tracking projects'),
+        'default': False,
+        'validator': bool,
+    },
     'STOCKTAKE_ENABLE': {
-        'name': _('Stocktake Functionality'),
+        'name': _('Enable Stock History'),
         'description': _(
-            'Enable stocktake functionality for recording stock levels and calculating stock value'
+            'Enable functionality for recording historical stock levels and value'
         ),
         'validator': bool,
         'default': False,
@@ -1014,32 +1091,45 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
     'STOCKTAKE_EXCLUDE_EXTERNAL': {
         'name': _('Exclude External Locations'),
         'description': _(
-            'Exclude stock items in external locations from stocktake calculations'
+            'Exclude stock items in external locations from stock history calculations'
         ),
         'validator': bool,
         'default': False,
     },
     'STOCKTAKE_AUTO_DAYS': {
         'name': _('Automatic Stocktake Period'),
-        'description': _(
-            'Number of days between automatic stocktake recording (set to zero to disable)'
-        ),
-        'validator': [int, MinValueValidator(0)],
-        'default': 0,
-    },
-    'STOCKTAKE_DELETE_REPORT_DAYS': {
-        'name': _('Report Deletion Interval'),
-        'description': _(
-            'Stocktake reports will be deleted after specified number of days'
-        ),
-        'default': 30,
+        'description': _('Number of days between automatic stock history recording'),
+        'validator': [int, MinValueValidator(1)],
+        'default': 7,
         'units': _('days'),
-        'validator': [int, MinValueValidator(7)],
+    },
+    'STOCKTAKE_DELETE_OLD_ENTRIES': {
+        'name': _('Delete Old Stock History Entries'),
+        'description': _(
+            'Delete stock history entries older than the specified number of days'
+        ),
+        'default': False,
+        'validator': bool,
+    },
+    'STOCKTAKE_DELETE_DAYS': {
+        'name': _('Stock History Deletion Interval'),
+        'description': _(
+            'Stock history entries will be deleted after specified number of days'
+        ),
+        'default': 365,
+        'units': _('days'),
+        'validator': [int, MinValueValidator(30)],
     },
     'DISPLAY_FULL_NAMES': {
         'name': _('Display Users full names'),
         'description': _('Display Users full names instead of usernames'),
         'default': False,
+        'validator': bool,
+    },
+    'DISPLAY_PROFILE_INFO': {
+        'name': _('Display User Profiles'),
+        'description': _('Display Users Profiles on their profile page'),
+        'default': True,
         'validator': bool,
     },
     'TEST_STATION_DATA': {
@@ -1048,10 +1138,10 @@ SYSTEM_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': False,
         'validator': bool,
     },
-    'TEST_UPLOAD_CREATE_TEMPLATE': {
-        'name': _('Create Template on Upload'),
+    'MACHINE_PING_ENABLED': {
+        'name': _('Enable Machine Ping'),
         'description': _(
-            'Create a new test template when uploading test data which does not match an existing template'
+            'Enable periodic ping task of registered machines to check their status'
         ),
         'default': True,
         'validator': bool,

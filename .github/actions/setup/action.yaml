@@ -57,14 +57,16 @@ runs:
         run: |
           python3 -m pip install -U pip
           pip3 install -U invoke wheel
-          pip3 install 'uv<0.3.0'
+          pip3 install 'uv>=0.9.6'
       - name: Allow uv to use the system Python by default
         run: echo "UV_SYSTEM_PYTHON=1" >> $GITHUB_ENV
         shell: bash
       - name: Install Specific Python Dependencies
         if: ${{ inputs.pip-dependency }}
         shell: bash
-        run: uv pip install ${{ inputs.pip-dependency }}
+        run: uv pip install ${PIP_DEPS}
+        env:
+          PIP_DEPS: ${{ inputs.pip-dependency }}
 
       # NPM installs
       - name: Install node.js ${{ env.node_version }}
@@ -78,8 +80,10 @@ runs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install ${{ inputs.apt-dependency }}
-          sudo apt-get install ${{ inputs.apt-dependency }}
+          sudo apt-get install ${APT_DEPS}
+          sudo apt-get install ${APT_DEPS}
+        env:
+          APT_DEPS: ${{ inputs.apt-dependency }}
 
       # Invoke commands
       - name: Install dev requirements

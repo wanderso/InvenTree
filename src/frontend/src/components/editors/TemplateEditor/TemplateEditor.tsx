@@ -1,9 +1,10 @@
-import { t } from '@lingui/macro';
+import { t } from '@lingui/core/macro';
 import {
   Alert,
   CloseButton,
-  Code,
   Group,
+  List,
+  ListItem,
   Overlay,
   Stack,
   Tabs
@@ -24,15 +25,14 @@ import Split from '@uiw/react-split';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { ModelInformationDict } from '@lib/enums/ModelInformation';
+import { ModelType } from '@lib/enums/ModelType';
+import { apiUrl } from '@lib/functions/Api';
 import { api } from '../../../App';
-import { ModelType } from '../../../enums/ModelType';
-import type { TablerIconType } from '../../../functions/icons';
-import { apiUrl } from '../../../states/ApiState';
 import type { TemplateI } from '../../../tables/settings/TemplateTable';
 import { Boundary } from '../../Boundary';
 import { SplitButton } from '../../buttons/SplitButton';
 import { StandaloneField } from '../../forms/StandaloneField';
-import { ModelInformationDict } from '../../render/ModelType';
 
 type EditorProps = {
   template: TemplateI;
@@ -50,7 +50,7 @@ export type EditorComponent = React.ForwardRefExoticComponent<
 export type Editor = {
   key: string;
   name: string;
-  icon?: TablerIconType;
+  icon?: React.ReactNode;
   component: EditorComponent;
 };
 
@@ -72,7 +72,7 @@ export type PreviewAreaComponent = React.ForwardRefExoticComponent<
 export type PreviewArea = {
   key: string;
   name: string;
-  icon: TablerIconType;
+  icon: React.ReactNode;
   component: PreviewAreaComponent;
 };
 
@@ -86,13 +86,13 @@ export type TemplateEditorProps = {
 
 export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
   const { templateUrl, editors, previewAreas, template } = props;
-  const editorRef = useRef<EditorRef>();
-  const previewRef = useRef<PreviewAreaRef>();
+  const editorRef = useRef<EditorRef | null>(null);
+  const previewRef = useRef<PreviewAreaRef | null>(null);
 
   const [hasSaveConfirmed, setHasSaveConfirmed] = useState(false);
 
   const [previewItem, setPreviewItem] = useState<string>('');
-  const [errorOverlay, setErrorOverlay] = useState(null);
+  const [renderingErrors, setRenderingErrors] = useState<string[] | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
   const [editorValue, setEditorValue] = useState<null | string>(editors[0].key);
@@ -100,7 +100,7 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
     previewAreas[0].key
   );
 
-  const codeRef = useRef<string | undefined>();
+  const codeRef = useRef<string | undefined>(undefined);
 
   const loadCodeToEditor = useCallback(async (code: string) => {
     try {
@@ -132,8 +132,17 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
 
     api.get(templateUrl).then((response: any) => {
       if (response.data?.template) {
+        // Fetch the raw template file from the server
+        // Request that it is provided without any caching,
+        // to ensure that we always get the latest version
         api
-          .get(response.data.template)
+          .get(response.data.template, {
+            headers: {
+              'Cache-Control': 'no-cache',
+              Pragma: 'no-cache',
+              Expires: '0'
+            }
+          })
           .then((res) => {
             codeRef.current = res.data;
             loadCodeToEditor(res.data);
@@ -202,7 +211,7 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
         )
       )
         .then(() => {
-          setErrorOverlay(null);
+          setRenderingErrors(null);
 
           notifications.hide('template-preview');
 
@@ -214,7 +223,19 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
           });
         })
         .catch((error) => {
-          setErrorOverlay(error.message);
+          const msg = error?.message;
+
+          if (msg) {
+            if (Array.isArray(msg)) {
+              setRenderingErrors(msg);
+            } else {
+              setRenderingErrors([msg]);
+            }
+          } else {
+            setRenderingErrors([
+              t`An unknown error occurred while rendering the preview.`
+            ]);
+          }
         })
         .finally(() => {
           setIsPreviewLoading(false);
@@ -272,7 +293,7 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
                   <Tabs.Tab
                     key={Editor.key}
                     value={Editor.key}
-                    leftSection={Editor.icon && <Editor.icon size='0.8rem' />}
+                    leftSection={Editor.icon}
                   >
                     {Editor.name}
                   </Tabs.Tab>
@@ -336,9 +357,7 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
                 <Tabs.Tab
                   key={PreviewArea.key}
                   value={PreviewArea.key}
-                  leftSection={
-                    PreviewArea.icon && <PreviewArea.icon size='0.8rem' />
-                  }
+                  leftSection={PreviewArea.icon}
                 >
                   {PreviewArea.name}
                 </Tabs.Tab>
@@ -386,10 +405,10 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
                   {/* @ts-ignore-next-line */}
                   <PreviewArea.component ref={previewRef} />
 
-                  {errorOverlay && (
+                  {renderingErrors && (
                     <Overlay color='red' center blur={0.2}>
                       <CloseButton
-                        onClick={() => setErrorOverlay(null)}
+                        onClick={() => setRenderingErrors(null)}
                         style={{
                           position: 'absolute',
                           top: '10px',
@@ -404,7 +423,11 @@ export function TemplateEditor(props: Readonly<TemplateEditorProps>) {
                         title={t`Error rendering template`}
                         mx='10px'
                       >
-                        <Code>{errorOverlay}</Code>
+                        <List>
+                          {renderingErrors.map((error, index) => (
+                            <ListItem key={index}>{error}</ListItem>
+                          ))}
+                        </List>
                       </Alert>
                     </Overlay>
                   )}
